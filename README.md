@@ -2,7 +2,7 @@
 
 A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection using named profiles. Built for local testing of remote services.
 
-## 📦 Features
+## Features
 
 - Named profiles stored in a single `rules.json` file
 - Human-friendly rule IDs
@@ -14,7 +14,7 @@ A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirecti
 - Start and stop `mitmdump` cleanly in the background
 - Bash autocompletion included
 
-## 🚀 Setup
+## Setup
 
 1. **Install `mitmproxy`**:
 
@@ -42,7 +42,7 @@ chmod +x giant-proxy
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## 🧰 Commands
+## Commands
 
 | Command                 | Description                                |
 | ----------------------- | ------------------------------------------ |
@@ -64,14 +64,14 @@ export PATH="$HOME/.local/bin:$PATH"
 | `version`               | Print version                              |
 | `help`                  | Show command usage                         |
 
-## 📄 Files
+## Files
 
 - `giant-proxy` — the CLI script
 - `rules.json` — profiles + rules
 - `mitmproxy.log` — background log file
 - `last_run.json` — info on last started profile
 
-## 📝 Example
+## Example
 
 ```bash
 giant-proxy list --profile prod
