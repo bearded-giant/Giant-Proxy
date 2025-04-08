@@ -12,76 +12,79 @@ shift
 
 # --- Helpers ---
 get_profile() {
-  local p="default"
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --profile) p="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  echo "$p"
+    local p="default"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --profile)
+            p="$2"
+            shift 2
+            ;;
+        *) shift ;;
+        esac
+    done
+    echo "$p"
 }
 
 is_verbose() {
-  for arg in "$@"; do
-    [[ "$arg" == "--verbose" ]] && return 0
-  done
-  return 1
+    for arg in "$@"; do
+        [[ "$arg" == "--verbose" ]] && return 0
+    done
+    return 1
 }
 
 # --- Commands ---
 list_rules() {
-  local profile
-  profile=$(get_profile "$@")
-  jq -c ".\"$profile\"[]" "$RULES_FILE" | while read -r rule; do
-    id=$(echo "$rule" | jq -r .id)
-    enabled=$(echo "$rule" | jq -r .enabled)
-    host=$(echo "$rule" | jq -r .host)
-    port=$(echo "$rule" | jq -r .port)
-    if is_verbose "$@"; then
-      if [[ "$enabled" == "true" ]]; then
-        echo "✅ $id → http://$host:$port"
-      else
-        echo "❌ $id → http://$host:$port (disabled)"
-      fi
-    else
-      status="disabled"
-      [[ "$enabled" == "true" ]] && status="enabled"
-      echo "$id [$status]"
-    fi
-  done
+    local profile
+    profile=$(get_profile "$@")
+    jq -c ".\"$profile\"[]" "$RULES_FILE" | while read -r rule; do
+        id=$(echo "$rule" | jq -r .id)
+        enabled=$(echo "$rule" | jq -r .enabled)
+        host=$(echo "$rule" | jq -r .host)
+        port=$(echo "$rule" | jq -r .port)
+        if is_verbose "$@"; then
+            if [[ "$enabled" == "true" ]]; then
+                echo "✅ $id → http://$host:$port"
+            else
+                echo "❌ $id → http://$host:$port (disabled)"
+            fi
+        else
+            status="disabled"
+            [[ "$enabled" == "true" ]] && status="enabled"
+            echo "$id [$status]"
+        fi
+    done
 }
 
 toggle_rule() {
-  local rule_id="$1"
-  local profile
-  profile=$(get_profile "$@")
+    local rule_id="$1"
+    local profile
+    profile=$(get_profile "$@")
 
-  if [[ -z "$rule_id" ]]; then
-    echo "Usage: $0 toggle <rule_id> --profile <profile>"
-    exit 1
-  fi
+    if [[ -z "$rule_id" ]]; then
+        echo "Usage: $0 toggle <rule_id> --profile <profile>"
+        exit 1
+    fi
 
-  jq ".${profile} |= map(if .id == \"$rule_id\" then .enabled = (not .enabled) else . end)" "$RULES_FILE" > tmp.$$.json &&
-    mv tmp.$$.json "$RULES_FILE"
-  echo "🔁 Toggled rule '$rule_id' in profile '$profile'"
+    jq ".${profile} |= map(if .id == \"$rule_id\" then .enabled = (not .enabled) else . end)" "$RULES_FILE" >tmp.$$.json &&
+        mv tmp.$$.json "$RULES_FILE"
+    echo "🔁 Toggled rule '$rule_id' in profile '$profile'"
 }
 
 generate_py_script() {
-  local profile="$1"
-  echo "import re" > "$PY_SCRIPT"
-  echo "from mitmproxy import http" >> "$PY_SCRIPT"
-  echo "rules = [" >> "$PY_SCRIPT"
+    local profile="$1"
+    echo "import re" >"$PY_SCRIPT"
+    echo "from mitmproxy import http" >>"$PY_SCRIPT"
+    echo "rules = [" >>"$PY_SCRIPT"
 
-  jq -c ".\"$profile\"[] | select(.enabled == true)" "$RULES_FILE" | while read -r rule; do
-    regex=$(echo "$rule" | jq -r .regex)
-    host=$(echo "$rule" | jq -r .host)
-    port=$(echo "$rule" | jq -r .port)
-    echo "  (re.compile(r"$regex"), "$host", $port)," >> "$PY_SCRIPT"
-  done
+    jq -c ".\"$profile\"[] | select(.enabled == true)" "$RULES_FILE" | while read -r rule; do
+        regex=$(echo "$rule" | jq -r .regex)
+        host=$(echo "$rule" | jq -r .host)
+        port=$(echo "$rule" | jq -r .port)
+        echo "  (re.compile(r"$regex"), "$host", $port)," >>"$PY_SCRIPT"
+    done
 
-  echo "]" >> "$PY_SCRIPT"
-  cat <<'EOF' >> "$PY_SCRIPT"
+    echo "]" >>"$PY_SCRIPT"
+    cat <<'EOF' >>"$PY_SCRIPT"
 def request(flow: http.HTTPFlow) -> None:
     url = flow.request.pretty_url
     for pattern, host, port in rules:
@@ -95,57 +98,57 @@ EOF
 }
 
 start_proxy() {
-  local profile
-  profile=$(get_profile "$@")
+    local profile
+    profile=$(get_profile "$@")
 
-  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    echo "⚠️  mitmdump already running (PID $(cat "$PID_FILE"))"
-    exit 1
-  fi
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "⚠️  mitmdump already running (PID $(cat "$PID_FILE"))"
+        exit 1
+    fi
 
-  generate_py_script "$profile"
-  echo "{\"profile\": \"$profile\"}" > "$LAST_RUN_FILE"
-  mitmdump -s "$PY_SCRIPT" > mitmproxy.log 2>&1 &
-  echo $! > "$PID_FILE"
-  echo "🚀 mitmdump started (PID $!)"
+    generate_py_script "$profile"
+    echo "{\"profile\": \"$profile\"}" >"$LAST_RUN_FILE"
+    mitmdump -s "$PY_SCRIPT" >mitmproxy.log 2>&1 &
+    echo $! >"$PID_FILE"
+    echo "🚀 mitmdump started (PID $!)"
 }
 
 stop_proxy() {
-  if [[ -f "$PID_FILE" ]]; then
-    PID=$(cat "$PID_FILE")
-    if kill -0 "$PID" 2>/dev/null; then
-      kill "$PID"
-      rm -f "$PID_FILE"
-      echo "🛑 mitmdump (PID $PID) stopped."
+    if [[ -f "$PID_FILE" ]]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"
+            rm -f "$PID_FILE"
+            echo "🛑 mitmdump (PID $PID) stopped."
+        else
+            echo "⚠️  mitmdump PID not found, removing stale PID file."
+            rm -f "$PID_FILE"
+        fi
     else
-      echo "⚠️  mitmdump PID not found, removing stale PID file."
-      rm -f "$PID_FILE"
+        echo "❌ mitmdump not running."
     fi
-  else
-    echo "❌ mitmdump not running."
-  fi
 }
 
 status() {
-  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    echo "✅ mitmdump running (PID $(cat "$PID_FILE"))"
-  else
-    echo "❌ mitmdump not running"
-  fi
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "✅ mitmdump running (PID $(cat "$PID_FILE"))"
+    else
+        echo "❌ mitmdump not running"
+    fi
 
-  if [[ -f "$LAST_RUN_FILE" ]]; then
-    echo -e "\n📄 Last run:"
-    cat "$LAST_RUN_FILE" | jq
-  fi
+    if [[ -f "$LAST_RUN_FILE" ]]; then
+        echo -e "\n📄 Last run:"
+        cat "$LAST_RUN_FILE" | jq
+    fi
 }
 
 case "$command" in
-  list) list_rules "$@" ;;
-  toggle) toggle_rule "$@" ;;
-  start) start_proxy "$@" ;;
-  stop) stop_proxy ;;
-  status) status ;;
-  *)
+list) list_rules "$@" ;;
+toggle) toggle_rule "$@" ;;
+start) start_proxy "$@" ;;
+stop) stop_proxy ;;
+status) status ;;
+*)
     echo "Usage:"
     echo "  $0 list --profile <name> [--verbose]"
     echo "  $0 toggle <rule_id> --profile <name>"

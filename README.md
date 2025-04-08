@@ -1,6 +1,6 @@
 # 🛡️ Giant Proxy
 
-A feature-complete Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection with named profiles — perfect for local testing of remote services.
+A feature-complete (pretty simple) Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection with named profiles — created for local testing of remote services.
 
 ## 📦 Features
 
@@ -15,16 +15,19 @@ A feature-complete Bash CLI wrapper around `mitmproxy` for managing regex-based 
 ## 🚀 Setup
 
 1. Install [`mitmproxy`](https://mitmproxy.org)
+
    ```bash
    brew install mitmproxy
    ```
 
 2. (Optional) Trust the mitmproxy root certificate:
+
    ```bash
    mitmproxy --install
    ```
 
 3. Run the CLI from this folder:
+
    ```bash
    chmod +x giant-proxy
    ./giant-proxy list --profile prod
@@ -68,7 +71,6 @@ giant-proxy status
 tail -f mitmproxy.log
 ```
 
-
 ## 🌍 Making `giant-proxy` Global
 
 To use `giant-proxy` from anywhere without `./`:
@@ -86,11 +88,13 @@ To use `giant-proxy` from anywhere without `./`:
    ```
 
 2. Make sure it's executable:
+
    ```bash
    chmod +x /usr/local/bin/giant-proxy
    ```
 
 3. Now you can use it anywhere:
+
    ```bash
    giant-proxy list --profile prod
    ```
@@ -100,18 +104,17 @@ To use `giant-proxy` from anywhere without `./`:
 If you prefer not to move the file, create an alias:
 
 ```bash
-# Add this to your ~/.zshrc or ~/.bashrc
+# Add this to your ~/.bashrc or ~/.zshrc
 alias giant-proxy="/full/path/to/giant-proxy"
 ```
 
 Then reload your shell:
 
 ```bash
-source ~/.zshrc  # or ~/.bashrc
+source ~/.bashrc # or ~/.zshrc
 ```
 
 Now `giant-proxy` works like a native command.
-
 
 ---
 
@@ -124,7 +127,6 @@ Now `giant-proxy` works like a native command.
 - `mitmproxy.pid`: background process tracking
 - `mitmproxy.log`: live logs
 
-
 ## 🌍 Making `giant-proxy` Global
 
 To use `giant-proxy` from anywhere without `./`:
@@ -142,11 +144,13 @@ To use `giant-proxy` from anywhere without `./`:
    ```
 
 2. Make sure it's executable:
+
    ```bash
    chmod +x /usr/local/bin/giant-proxy
    ```
 
 3. Now you can use it anywhere:
+
    ```bash
    giant-proxy list --profile prod
    ```
@@ -156,19 +160,16 @@ To use `giant-proxy` from anywhere without `./`:
 If you prefer not to move the file, create an alias:
 
 ```bash
-# Add this to your ~/.zshrc or ~/.bashrc
+# Add this to your ~/.bashrc or ~/.zshrc
 alias giant-proxy="/full/path/to/giant-proxy"
 ```
 
 Then reload your shell:
 
 ```bash
-source ~/.zshrc  # or ~/.bashrc
+source ~/.bashrc # or ~/.zshrc
 ```
 
 Now `giant-proxy` works like a native command.
 
-
 ---
-
-Enjoy redirecting like a giant 🦣
