@@ -1,110 +1,81 @@
 # 🛡️ Giant Proxy
 
-A wrapper Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection with named profiles — created for local testing of remote services.
+A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection using named profiles. Built for local testing of remote services.
 
 ## 📦 Features
 
 - Named profiles stored in a single `rules.json` file
-- Human-friendly rule IDs instead of numeric indexes
-- Enable/disable individual rules with `toggle`
-- Minimal and verbose output modes
-- Start/stop mitmproxy with tracking of last used profile
-- Automatic generation of `mitmproxy` scripts
-- Simple live logging with `tail -f mitmproxy.log`
+- Human-friendly rule IDs
+- Enable/disable individual rules
+- Verbose/minimal output modes
+- Auto-generates mitmproxy Python scripts per profile
+- Tracks last run profile (`last_run.json`)
+- Streams logs to `mitmproxy.log`
+- Start and stop `mitmdump` cleanly in the background
+- Bash autocompletion included
 
 ## 🚀 Setup
 
-1. Install [`mitmproxy`](https://mitmproxy.org)
-
-   ```bash
-   brew install mitmproxy
-   ```
-
-2. (Optional) Trust the mitmproxy root certificate:
-
-   ```bash
-   mitmproxy --install
-   ```
-
-3. Run the CLI from this folder:
-
-   ```bash
-   chmod +x giant-proxy
-   ./giant-proxy list --profile prod
-   ```
-
-## 🚀 Installation (Recommended)
-
-To install `giant-proxy` for use anywhere on your system:
+1. **Install `mitmproxy`**:
 
 ```bash
-cd giant-proxy
+brew install mitmproxy
+```
+
+2. **Install the mitmproxy certificate** (basic flow):
+
+```bash
+mitmproxy  # generates the cert on first run
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.mitmproxy/mitmproxy-ca-cert.pem
+```
+
+3. **Run the CLI from this folder (or install)**:
+
+```bash
+chmod +x giant-proxy
 ./giant-proxy install
 ```
 
-This creates a symlink to `~/.local/bin/giant-proxy`, allowing you to run it from any terminal window like:
-
-```bash
-giant-proxy list --profile prod
-```
-
-If `~/.local/bin` is not in your `$PATH`, you may need to add this to your `~/.bashrc` or `~/.zshrc`:
+### Add to your shell config if needed
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## 🧰 CLI Commands
+## 🧰 Commands
 
-### 🔍 List rules
+| Command                 | Description                                |
+| ----------------------- | ------------------------------------------ |
+| `list`, `ls`, `show`    | List rules in a profile                    |
+| `toggle <id>`           | Toggle rule enabled/disabled               |
+| `describe <id>`         | Show rule details                          |
+| `add-rule <id> ...`     | Add a rule with profile, regex, host, port |
+| `delete-rule <id>`      | Remove a rule from a profile               |
+| `create-profile <name>` | Add a new profile                          |
+| `start`, `on`           | Start proxy for profile (backgrounded)     |
+| `stop`, `off`           | Stop running proxy                         |
+| `status`                | Show if mitmdump is running                |
+| `logs`                  | Tail `mitmproxy.log`                       |
+| `doctor`                | Check mitmdump/cert dependencies           |
+| `doctor --verbose`      | Detailed diagnostic output                 |
+| `export`                | Output active rules in JSON                |
+| `install`               | Symlink CLI to `~/.local/bin`              |
+| `which`                 | Show resolved CLI path                     |
+| `version`               | Print version                              |
+| `help`                  | Show command usage                         |
 
-```bash
-giant-proxy list --profile <profile> [--verbose]
-```
+## 📄 Files
 
-### 🔁 Toggle a rule
+- `giant-proxy` — the CLI script
+- `rules.json` — profiles + rules
+- `mitmproxy.log` — background log file
+- `last_run.json` — info on last started profile
 
-```bash
-giant-proxy toggle <rule_id> --profile <profile>
-```
-
-### 🚦 Start proxy with profile
-
-```bash
-giant-proxy start --profile <profile>
-```
-
-### 🛑 Stop proxy
-
-```bash
-giant-proxy stop
-```
-
-### 📊 Check status
-
-```bash
-giant-proxy status
-```
-
-### 📄 View logs
+## 📝 Example
 
 ```bash
-tail -f mitmproxy.log
+giant-proxy list --profile prod
+giant-proxy toggle remix_merchant_portal_prod --profile prod
+giant-proxy start --profile prod
+giant-proxy logs
 ```
-
-Now `giant-proxy` works like a native command.
-
----
-
-## 📁 Files
-
-- `rules.json`: all your rules organized by profile
-- `giant-proxy`: the CLI runner
-- `generated_proxy_map.py`: auto-generated script for mitmproxy
-- `last_run.json`: remembers your last used profile
-- `mitmproxy.pid`: background process tracking
-- `mitmproxy.log`: live logs
-
-Now `giant-proxy` works like a native command.
-
----

@@ -2,200 +2,388 @@
 
 # === Constants ===
 SCRIPT_NAME="giant-proxy"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RULES_FILE="$SCRIPT_DIR/rules.json"
-LAST_RUN_FILE="$SCRIPT_DIR/last_run.json"
-PY_SCRIPT="$SCRIPT_DIR/generated_proxy_map.py"
-PID_FILE="$SCRIPT_DIR/mitmproxy.pid"
+VERSION="1.0.0"
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 
-command=$1
-shift
+RULES_FILE="$SCRIPT_DIR/rules.json"
+
+command="$1"
+shift || true
 
 # === Helpers ===
 get_profile() {
-  local p="default"
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --profile) p="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  echo "$p"
+    local p=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --profile)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing profile name after --profile"
+                exit 1
+            fi
+            p="$2"
+            shift 2
+            ;;
+        *) shift ;;
+        esac
+    done
+    if [[ -z "$p" ]]; then
+        echo "❌ Missing --profile <name>"
+        exit 1
+    fi
+    echo "$p"
 }
-
 is_verbose() {
-  for arg in "$@"; do
-    [[ "$arg" == "--verbose" ]] && return 0
-  done
-  return 1
+    for arg in "$@"; do
+        [[ "$arg" == "--verbose" ]] && return 0
+    done
+    return 1
 }
 
 print_help() {
-  echo ""
-  echo "📖 Usage: $SCRIPT_NAME <command> [options]"
-  echo ""
-  echo "Commands:"
-  echo "  list                      List all rules for a profile"
-  echo "  toggle <rule_id>          Toggle a rule on/off"
-  echo "  start                     Start mitmproxy with the selected profile"
-  echo "  stop                      Stop mitmproxy"
-  echo "  status                    Show current proxy status"
-  echo "  install                   Symlink this CLI to ~/.local/bin"
-  echo "  update                    Pull latest version and sync"
-  echo "  create-profile <name>     Create a new profile in rules.json"
-  echo "  help                      Show this help message"
-  echo ""
-  echo "Options:"
-  echo "  --profile <name>          Use a specific profile"
-  echo "  --verbose                 Show detailed rule output"
-  echo ""
+    echo ""
+    echo "📖 Usage: $SCRIPT_NAME <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  list                      List all rules for a profile"
+    echo "  toggle <rule_id>          Toggle a rule on/off"
+    echo "  describe <rule_id> --profile <profile>  Show full rule JSON"
+    echo "  start                     Start mitmproxy with the selected profile"
+    echo "  stop                      Stop mitmproxy"
+    echo "  status                    Show current proxy status"
+    echo "  install                   Symlink this CLI to ~/.local/bin"
+    echo "  update                    Pull latest version and sync"
+    echo "  create-profile <name>     Create a new profile in rules.json"
+    echo "  add-rule <id> --profile <profile> --regex <r> --host <h> --port <p>"
+    echo "  delete-rule <id> --profile <profile>"
+    echo "  doctor [--json]           Check dependencies"
+    echo "  export --profile <profile>  Output all enabled rules as JSON"
+    echo "  help                      Show this help message"
+    echo "  version                   Show version info"
+    echo "  which                     Show the resolved CLI path"
+    echo "  logs                      Tail mitmproxy.log"
+    echo "  ls, show                  Aliases for list"
+    echo "  on                        Alias for start"
+    echo "  off                       Alias for stop"
+    echo "  version                   Show version info"
+    echo "  ls                        Alias for list"
+    echo "  on                        Alias for start"
+    echo "  off                       Alias for stop"
+    echo "  show                      Alias for list"
+    echo ""
+    echo "Options:"
+    echo "  --profile <name>          Use a specific profile"
+    echo "  --verbose                 Show detailed rule output"
+    echo ""
 }
-
-install_cli() {
-  local BIN_DIR="$HOME/.local/bin"
-  mkdir -p "$BIN_DIR"
-  ln -sf "$SCRIPT_DIR/$SCRIPT_NAME" "$BIN_DIR/$SCRIPT_NAME"
-  echo "✅ Installed symlink: $BIN_DIR/$SCRIPT_NAME"
-  if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    echo "⚠️  $BIN_DIR is not in your PATH. Add this to your shell:"
-    echo "    export PATH="$BIN_DIR:\$PATH""
-  fi
-}
-
-update_cli() {
-  echo "🔄 Stub: You can replace this with 'git pull' if this is a git repo."
-}
-
-create_profile() {
-  local name="$1"
-  if [[ -z "$name" ]]; then
-    echo "Usage: $SCRIPT_NAME create-profile <name>"
-    exit 1
-  fi
-  jq ". + { \"$name\": [] }" "$RULES_FILE" > tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
-  echo "✅ Created profile '$name'"
-}
-
 
 add_rule() {
-  local rule_id="$1"
-  shift
-  local profile regex host port
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --profile) profile="$2"; shift 2 ;;
-      --regex) regex="$2"; shift 2 ;;
-      --host) host="$2"; shift 2 ;;
-      --port) port="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  if [[ -z "$profile" || -z "$rule_id" || -z "$regex" || -z "$host" || -z "$port" ]]; then
-    echo "Usage: $SCRIPT_NAME add-rule <rule_id> --profile <profile> --regex <pattern> --host <host> --port <port>"
-    exit 1
-  fi
-  jq --arg id "$rule_id" --arg regex "$regex" --arg host "$host" --argjson port "$port" '
+    local rule_id="$1"
+    shift
+    local profile="" regex="" host="" port=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --profile)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --profile"
+                exit 1
+            fi
+            profile="$2"
+            shift 2
+            ;;
+        --regex)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --regex"
+                exit 1
+            fi
+            regex="$2"
+            shift 2
+            ;;
+        --host)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --host"
+                exit 1
+            fi
+            host="$2"
+            shift 2
+            ;;
+        --port)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --port"
+                exit 1
+            fi
+            port="$2"
+            shift 2
+            ;;
+        *) shift ;;
+        esac
+    done
+    if [[ -z "$profile" || -z "$rule_id" || -z "$regex" || -z "$host" || -z "$port" ]]; then
+        echo "Usage: $SCRIPT_NAME add-rule <rule_id> --profile <profile> --regex <pattern> --host <host> --port <port>"
+        exit 1
+    fi
+    jq --arg id "$rule_id" --arg regex "$regex" --arg host "$host" --argjson port "$port" '
     .[$ARGS.named.profile] += [{
       id: $id,
       enabled: true,
       regex: $regex,
       host: $host,
       port: $port
-    }]' --arg profile "$profile" "$RULES_FILE" > tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
-  echo "✅ Rule '$rule_id' added to profile '$profile'"
+    }]' --arg profile "$profile" "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+    echo "✅ Rule '$rule_id' added to profile '$profile'"
+}
+list_rules() {
+    local profile
+    profile=$(get_profile "$@")
+
+    if ! jq -e ".\"$profile\"" "$RULES_FILE" >/dev/null; then
+        echo "❌ Profile '$profile' does not exist in $RULES_FILE"
+        exit 1
+    fi
+
+    jq -c ".\"$profile\"[]" "$RULES_FILE" | while read -r rule; do
+        id=$(echo "$rule" | jq -r .id)
+        enabled=$(echo "$rule" | jq -r .enabled)
+        host=$(echo "$rule" | jq -r .host)
+        port=$(echo "$rule" | jq -r .port)
+        if is_verbose "$@"; then
+            if [[ "$enabled" == "true" ]]; then
+                echo "✅ $id → http://$host:$port"
+            else
+                echo "❌ $id → http://$host:$port (disabled)"
+            fi
+        else
+            status="disabled"
+            [[ "$enabled" == "true" ]] && status="enabled"
+            echo "$id [$status]"
+        fi
+    done
+}
+delete_rule() {
+    local rule_id="$1"
+    shift
+    local profile=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --profile)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --profile"
+                exit 1
+            fi
+            profile="$2"
+            shift 2
+            ;;
+        *) shift ;;
+        esac
+    done
+    if [[ -z "$rule_id" || -z "$profile" ]]; then
+        echo "Usage: $SCRIPT_NAME delete-rule <rule_id> --profile <profile>"
+        exit 1
+    fi
+    jq ".["$profile"] |= map(select(.id != "$rule_id"))" "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+    echo "🗑️  Deleted rule '$rule_id' from profile '$profile'"
 }
 
-delete_rule() {
-  local rule_id="$1"
-  shift
-  local profile
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --profile) profile="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  if [[ -z "$rule_id" || -z "$profile" ]]; then
-    echo "Usage: $SCRIPT_NAME delete-rule <rule_id> --profile <profile>"
-    exit 1
-  fi
-  jq ".[\"$profile\"] |= map(select(.id != \"$rule_id\"))" "$RULES_FILE" > tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
-  echo "🗑️  Deleted rule '$rule_id' from profile '$profile'"
+toggle_rule() {
+    local rule_id="$1"
+    shift
+    local profile
+    profile=$(get_profile "$@")
+
+    if [[ -z "$rule_id" || -z "$profile" ]]; then
+        echo "Usage: $SCRIPT_NAME toggle <rule_id> --profile <profile>"
+        exit 1
+    fi
+
+    if ! jq -e ".\"$profile\" | type == \"array\"" "$RULES_FILE" >/dev/null; then
+        echo "❌ Profile '$profile' does not contain a valid rule array."
+        exit 1
+    fi
+
+    jq --arg rule_id "$rule_id" '
+      .[$ARGS.named.profile] |= map(
+        if .id == $rule_id then
+          .enabled = (if .enabled == true then false else true end)
+        else . end
+      )
+    ' --arg profile "$profile" "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+
+    echo "🔁 Toggled rule '$rule_id' in profile '$profile'"
+}
+
+start_proxy() {
+    local profile
+    profile=$(get_profile "$@")
+    local script="$SCRIPT_DIR/generated_proxy_map.py"
+
+    echo "import re" >"$script"
+    echo "from mitmproxy import http" >>"$script"
+    echo "rules = [" >>"$script"
+
+    jq -c ".\"$profile\"[] | select(.enabled == true)" "$RULES_FILE" | while read -r rule; do
+        regex=$(echo "$rule" | jq -r .regex)
+        host=$(echo "$rule" | jq -r .host)
+        port=$(echo "$rule" | jq -r .port)
+        echo "  (re.compile(r\"$regex\"), \"$host\", $port)," >>"$script"
+    done
+
+    echo "]" >>"$script"
+    cat <<'EOF' >>"$script"
+def request(flow: http.HTTPFlow) -> None:
+    url = flow.request.pretty_url
+    for pattern, host, port in rules:
+        if pattern.match(url):
+            print(f"Matched: {url} → http://{host}:{port}")
+            flow.request.host = host
+            flow.request.port = port
+            flow.request.scheme = "http"
+            break
+EOF
+
+    echo "{ \"profile\": \"$profile\", \"started_at\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\" }" >"$SCRIPT_DIR/last_run.json"
+    mitmdump -s "$script" >"$SCRIPT_DIR/mitmproxy.log" 2>&1 &
+    echo "✅ mitmdump started in background (PID $!)"
+    echo "📝 Logs: tail -f $SCRIPT_DIR/mitmproxy.log"
+}
+
+status() {
+    if pgrep -f mitmdump >/dev/null; then
+        echo "✅ mitmdump is running"
+    else
+        echo "❌ mitmdump is not running"
+    fi
+}
+
+stop_proxy() {
+    pkill -f mitmdump && echo "🛑 mitmdump stopped" || echo "⚠️  mitmdump was not running"
+}
+
+logs() {
+    local log_file="$SCRIPT_DIR/mitmproxy.log"
+    if [[ -f "$log_file" ]]; then
+        echo "📄 Tailing logs from $log_file (press Ctrl+C to stop)"
+        tail -f "$log_file"
+    else
+        echo "❌ Log file not found: $log_file"
+    fi
+}
+
+which_command() {
+    echo "📍 Resolved path: $SCRIPT_DIR/$SCRIPT_NAME"
 }
 
 doctor() {
-  local json_output=false
-  if [[ "$1" == "--json" ]]; then
-    json_output=true
-  fi
+    local json_output=false
+    local verbose_output=false
 
-  local mitmproxy_ok=false
-  local cert_ok=false
-  local mitm_path
-  mitm_path=$(command -v mitmdump || true)
+    for arg in "$@"; do
+        case "$arg" in
+        --json) json_output=true ;;
+        --verbose) verbose_output=true ;;
+        esac
+    done
 
-  if [[ -x "$mitm_path" ]]; then
-    mitmproxy_ok=true
-  fi
+    local mitmproxy_ok=false
+    local cert_ok=false
+    local mitm_path
+    mitm_path=$(command -v mitmdump || true)
 
-  local cert_path="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
-  if [[ -f "$cert_path" ]]; then
-    cert_ok=true
-  fi
+    if [[ -x "$mitm_path" ]]; then
+        mitmproxy_ok=true
+    fi
 
-  if [[ "$json_output" == true ]]; then
-    echo "{"
-    echo "  \"mitmproxy_installed\": $mitmproxy_ok,"
-    echo "  \"cert_installed\": $cert_ok"
-    echo "}"
-  else
-    $mitmproxy_ok && echo "✅ mitmdump installed" || echo "❌ mitmdump NOT found"
-    $cert_ok && echo "✅ mitmproxy cert installed" || echo "❌ mitmproxy cert NOT found"
-  fi
+    local cert_path="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+    if [[ -f "$cert_path" ]]; then
+        cert_ok=true
+    fi
+
+    if [[ "$json_output" == true ]]; then
+        echo "{"
+        echo "  \"mitmproxy_installed\": $mitmproxy_ok,"
+        echo "  \"cert_installed\": $cert_ok"
+        echo "}"
+    elif [[ "$verbose_output" == true ]]; then
+        echo "🩺 Giant Proxy Diagnostic Report"
+        echo "────────────────────────────────────"
+        echo "📦 mitmdump path: ${mitm_path:-Not Found}"
+        echo "📄 cert path: $cert_path"
+        echo ""
+        $mitmproxy_ok && echo "✅ mitmdump is installed" || echo "❌ mitmdump is NOT installed"
+        $cert_ok && echo "✅ mitmproxy certificate is installed" || echo "❌ mitmproxy certificate is NOT installed"
+        echo ""
+    else
+        $mitmproxy_ok && echo "✅ mitmdump installed" || echo "❌ mitmdump NOT found"
+        $cert_ok && echo "✅ mitmproxy cert installed" || echo "❌ mitmproxy cert NOT found"
+    fi
 }
 
+install_cli() {
+    local BIN_DIR="$HOME/.local/bin"
+    local TARGET="$BIN_DIR/$SCRIPT_NAME"
+
+    echo "🔧 Installing $SCRIPT_NAME..."
+    mkdir -p "$BIN_DIR"
+
+    ln -sf "$SCRIPT_DIR/$SCRIPT_NAME" "$TARGET"
+    chmod +x "$SCRIPT_DIR/$SCRIPT_NAME"
+
+    echo "✅ Symlinked $SCRIPT_NAME to $TARGET"
+
+    if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+        echo "⚠️  $BIN_DIR is not in your PATH"
+        echo "   Add this to your shell profile (e.g. ~/.bashrc or ~/.zshrc):"
+        echo "   export PATH=\"$BIN_DIR:\$PATH\""
+    else
+        echo "   You can now run '$SCRIPT_NAME' from anywhere."
+    fi
+}
 
 case "$command" in
-  list) list_rules "$@" ;;
-  toggle) toggle_rule "$@" ;;
-  start) start_proxy "$@" ;;
-  stop) stop_proxy ;;
-  status) status ;;
-  *)
-    echo "Usage:"
-    echo "  $0 list --profile <name> [--verbose]"
-    echo "  $0 toggle <rule_id> --profile <name>"
-    echo "  $0 start --profile <name>"
-    echo "  $0 stop"
-    echo "  $0 status"
-    ;;
+list | ls | show) list_rules "$@" ;;
+toggle) toggle_rule "$@" ;;
+start | on) start_proxy "$@" ;;
+stop | off) stop_proxy ;;
+status) status ;;
+install) install_cli ;;
+update) update_cli ;;
+create-profile) create_profile "$@" ;;
+add-rule) add_rule "$@" ;;
+delete-rule) delete_rule "$@" ;;
+doctor) doctor "$@" ;;
+describe) describe_rule "$@" ;;
+export) export_rules "$@" ;;
+version | --version | -v) echo "$SCRIPT_NAME version $VERSION" ;;
+help | --help | -h) print_help ;;
+*) print_help ;;
 esac
-
 
 # === Autocomplete Support ===
 _giant_proxy_complete() {
-  local cur prev opts profiles rules profile_keys rule_ids
-  COMPREPLY=()
-  cur="${COMP_WORDS[COMP_CWORD]}"
-  prev="${COMP_WORDS[COMP_CWORD-1]}"
-  opts="list toggle start stop status install update create-profile add-rule delete-rule doctor help --profile --verbose --json"
+    local cur prev opts profiles rules profile_keys rule_ids
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD - 1]}"
+    opts="list toggle start stop status install update create-profile add-rule delete-rule doctor help --profile --verbose --json"
 
-  # Completion for --profile
-  if [[ "$prev" == "--profile" ]]; then
-    profiles=$(jq -r 'keys[]' "$SCRIPT_DIR/rules.json")
-    COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
-    return 0
-  fi
+    if [[ "$prev" == "--profile" ]]; then
+        profiles=$(jq -r 'keys[]' "$SCRIPT_DIR/rules.json")
+        COMPREPLY=($(compgen -W "$profiles" -- "$cur"))
+        return 0
+    fi
 
-  # Completion for rule_id args after toggle or delete-rule
-  if [[ "${COMP_WORDS[1]}" =~ ^(toggle|delete-rule)$ ]]; then
-    for p in $(jq -r 'keys[]' "$SCRIPT_DIR/rules.json"); do
-      rule_ids+=$(jq -r ".[$p][] | .id" "$SCRIPT_DIR/rules.json")
-    done
-    COMPREPLY=( $(compgen -W "$rule_ids" -- "$cur") )
-    return 0
-  fi
+    if [[ "${COMP_WORDS[1]}" =~ ^(toggle|delete-rule)$ ]]; then
+        for p in $(jq -r 'keys[]' "$SCRIPT_DIR/rules.json"); do
+            rule_ids+=$(jq -r ".[$p][] | .id" "$SCRIPT_DIR/rules.json")
+        done
+        COMPREPLY=($(compgen -W "$rule_ids" -- "$cur"))
+        return 0
+    fi
 
-  COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+    COMPREPLY=($(compgen -W "$opts" -- "$cur"))
 }
 complete -F _giant_proxy_complete giant-proxy

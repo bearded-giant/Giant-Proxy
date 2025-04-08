@@ -1,1 +1,8 @@
 .DS_Store
+
+# proxy things
+generated_proxy_map.py
+mitmproxy.log
+last_run.json
+__pycache__/
+*.pyc
