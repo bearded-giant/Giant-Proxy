@@ -1,6 +1,6 @@
 # 🛡️ Giant Proxy
 
-A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection using named profiles. Built for local testing of remote services.
+A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection using named profiles. Built for local testing of remote services as a lightweight alternative to tools like Proxyman.
 
 ## Features
 
@@ -10,9 +10,18 @@ A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirecti
 - Verbose/minimal output modes
 - Auto-generates mitmproxy Python scripts per profile
 - Tracks last run profile (`last_run.json`)
-- Streams logs to `mitmproxy.log`
+- **NEW: HTTPS preservation for local development**
+- **NEW: Structured JSON request/response logging**
+- **NEW: Proxyman import/export compatibility**
 - Start and stop `mitmdump` cleanly in the background
 - Bash autocompletion included
+
+## What's New in v1.1.0
+
+- **HTTPS Preservation**: Use `--preserve-https` to maintain secure connections when redirecting to local services
+- **Structured Logging**: JSON-formatted request/response logs with filtering, timing, and correlation IDs
+- **Proxyman Compatibility**: Import/export rules to easily migrate from Proxyman
+- **Enhanced CLI**: New commands for profile management, rule inspection, and git updates
 
 ## Setup
 
@@ -49,17 +58,20 @@ export PATH="$HOME/.local/bin:$PATH"
 | `list`, `ls`, `show`    | List rules in a profile                    |
 | `toggle <id>`           | Toggle rule enabled/disabled               |
 | `describe <id>`         | Show rule details                          |
-| `add-rule <id> ...`     | Add a rule with profile, regex, host, port |
+| `add-rule <id> ...`     | Add a rule with profile, regex, host, port, scheme |
 | `delete-rule <id>`      | Remove a rule from a profile               |
 | `create-profile <name>` | Add a new profile                          |
 | `start`, `on`           | Start proxy for profile (backgrounded)     |
 | `stop`, `off`           | Stop running proxy                         |
 | `status`                | Show if mitmdump is running                |
-| `logs`                  | Tail `mitmproxy.log`                       |
+| `logs`                  | View structured logs with filtering        |
 | `doctor`                | Check mitmdump/cert dependencies           |
 | `doctor --verbose`      | Detailed diagnostic output                 |
 | `export`                | Output active rules in JSON                |
+| `import-proxyman`       | Import rules from Proxyman                 |
+| `export-proxyman`       | Export rules to Proxyman format            |
 | `install`               | Symlink CLI to `~/.local/bin`              |
+| `update`                | Pull latest version from git               |
 | `which`                 | Show resolved CLI path                     |
 | `version`               | Print version                              |
 | `help`                  | Show command usage                         |
@@ -67,15 +79,55 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Files
 
 - `giant-proxy` — the CLI script
-- `rules.json` — profiles + rules
-- `mitmproxy.log` — background log file
+- `rules.json` — profiles + rules  
+- `logs/` — structured JSON logs (new)
+- `mitmproxy.log` — legacy log file
 - `last_run.json` — info on last started profile
+- `generated_proxy_map.py` — auto-generated mitmproxy script
 
-## Example
+## Examples
 
+### Basic Usage
 ```bash
 giant-proxy list --profile prod
 giant-proxy toggle remix_merchant_portal_prod --profile prod
 giant-proxy start --profile prod
 giant-proxy logs
+```
+
+### HTTPS Preservation
+```bash
+# Maintain HTTPS when redirecting to local services
+giant-proxy start --profile dev --preserve-https
+```
+
+### Advanced Logging
+```bash
+# Filter logs by keyword
+giant-proxy logs --filter "POST"
+
+# View logs as JSON
+giant-proxy logs --json
+
+# View logs without following (static)
+giant-proxy logs --no-follow --filter "error"
+```
+
+### Proxyman Migration
+```bash
+# Import rules from Proxyman
+giant-proxy import-proxyman proxyman-rules.json --profile imported
+
+# Export rules to Proxyman format
+giant-proxy export-proxyman --profile prod --output proxyman-export.json
+```
+
+### Rule Management
+```bash
+# Add a rule with HTTPS scheme
+giant-proxy add-rule api_rule --profile dev \
+  --regex "^https://api\.example\.com/.*" \
+  --host localhost \
+  --port 3000 \
+  --scheme https
 ```
