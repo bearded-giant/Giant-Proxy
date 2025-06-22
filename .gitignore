@@ -6,3 +6,5 @@ mitmproxy.log
 last_run.json
 __pycache__/
 *.pyc
+logs/
+*.log

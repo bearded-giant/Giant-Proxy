@@ -2,7 +2,7 @@
 
 # === Constants ===
 SCRIPT_NAME="giant-proxy"
-VERSION="1.0.0"
+VERSION="1.1.0"
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
     DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
@@ -68,7 +68,7 @@ print_help() {
     echo "  help                      Show this help message"
     echo "  version                   Show version info"
     echo "  which                     Show the resolved CLI path"
-    echo "  logs                      Tail mitmproxy.log"
+    echo "  logs [--filter <text>] [--no-follow] [--json]  View structured logs"
     echo "  ls, show                  Aliases for list"
     echo "  on                        Alias for start"
     echo "  off                       Alias for stop"
@@ -258,12 +258,81 @@ start_proxy() {
 
     echo "]" >>"$script"
     cat <<'EOF' >>"$script"
+import json
+import time
+import uuid
+from datetime import datetime
+
+# Create logs directory if it doesn't exist
+import os
+log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
+# Log file path with timestamp
+log_file = os.path.join(log_dir, f'proxy_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
+
+def log_request(request_id, flow, action, target_host=None, target_port=None, target_scheme=None):
+    log_entry = {
+        "id": request_id,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "type": "request",
+        "method": flow.request.method,
+        "url": flow.request.pretty_url,
+        "host": flow.request.host,
+        "port": flow.request.port,
+        "scheme": flow.request.scheme,
+        "path": flow.request.path,
+        "headers": dict(flow.request.headers),
+        "action": action
+    }
+    
+    if action == "redirect":
+        log_entry["redirect"] = {
+            "host": target_host,
+            "port": target_port,
+            "scheme": target_scheme
+        }
+    
+    with open(log_file, 'a') as f:
+        f.write(json.dumps(log_entry) + '\n')
+    
+    # Also print to stdout for real-time monitoring
+    if action == "redirect":
+        print(f"[{request_id}] Matched: {flow.request.pretty_url} → {target_scheme}://{target_host}:{target_port}")
+    else:
+        print(f"[{request_id}] Passed through: {flow.request.pretty_url}")
+
+def response(flow: http.HTTPFlow) -> None:
+    request_id = getattr(flow.request, 'giant_proxy_id', 'unknown')
+    
+    log_entry = {
+        "id": request_id,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "type": "response",
+        "status_code": flow.response.status_code,
+        "reason": flow.response.reason,
+        "headers": dict(flow.response.headers),
+        "duration_ms": int((time.time() - getattr(flow.request, 'giant_proxy_start', time.time())) * 1000)
+    }
+    
+    with open(log_file, 'a') as f:
+        f.write(json.dumps(log_entry) + '\n')
+    
+    print(f"[{request_id}] Response: {flow.response.status_code} ({log_entry['duration_ms']}ms)")
+
 def request(flow: http.HTTPFlow) -> None:
+    # Generate unique request ID
+    request_id = str(uuid.uuid4())[:8]
+    flow.request.giant_proxy_id = request_id
+    flow.request.giant_proxy_start = time.time()
+    
     url = flow.request.pretty_url
     original_scheme = flow.request.scheme
+    matched = False
     
     for pattern, host, port, rule_scheme in rules:
         if pattern.match(url):
+            matched = True
             # Determine the target scheme
             if preserve_https and original_scheme == "https":
                 target_scheme = "https"
@@ -277,11 +346,15 @@ def request(flow: http.HTTPFlow) -> None:
                 target_scheme = rule_scheme
                 target_port = port
             
-            print(f"Matched: {url} → {target_scheme}://{host}:{target_port}")
+            log_request(request_id, flow, "redirect", host, target_port, target_scheme)
+            
             flow.request.host = host
             flow.request.port = target_port
             flow.request.scheme = target_scheme
             break
+    
+    if not matched:
+        log_request(request_id, flow, "passthrough")
 EOF
 
     # Add mitmdump options for better HTTPS handling
@@ -314,12 +387,90 @@ stop_proxy() {
 }
 
 logs() {
+    local filter=""
+    local follow=true
+    local json_output=false
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --filter)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --filter"
+                exit 1
+            fi
+            filter="$2"
+            shift 2
+            ;;
+        --no-follow)
+            follow=false
+            shift
+            ;;
+        --json)
+            json_output=true
+            shift
+            ;;
+        *) shift ;;
+        esac
+    done
+    
+    # First check for new JSON logs
+    local logs_dir="$SCRIPT_DIR/logs"
+    if [[ -d "$logs_dir" ]]; then
+        # Find the most recent log file
+        local latest_log=$(ls -t "$logs_dir"/proxy_*.json 2>/dev/null | head -1)
+        
+        if [[ -n "$latest_log" ]]; then
+            echo "📄 Reading structured logs from $latest_log"
+            
+            if [[ "$json_output" == "true" ]]; then
+                # Output raw JSON
+                if [[ -n "$filter" ]]; then
+                    if [[ "$follow" == "true" ]]; then
+                        tail -f "$latest_log" | grep "$filter"
+                    else
+                        grep "$filter" "$latest_log"
+                    fi
+                else
+                    if [[ "$follow" == "true" ]]; then
+                        tail -f "$latest_log"
+                    else
+                        cat "$latest_log"
+                    fi
+                fi
+            else
+                # Pretty print logs
+                local print_cmd='jq -r '"'"'"\(.timestamp) [\(.id)] \(.type | ascii_upcase) \(.method // "") \(.url // .status_code) \(if .action == "redirect" then "→ \(.redirect.scheme)://\(.redirect.host):\(.redirect.port)" elif .duration_ms then "(\(.duration_ms)ms)" else "" end)"'"'"
+                
+                if [[ -n "$filter" ]]; then
+                    print_cmd="$print_cmd | grep -i '$filter'"
+                fi
+                
+                if [[ "$follow" == "true" ]]; then
+                    echo "Press Ctrl+C to stop..."
+                    tail -f "$latest_log" | while read line; do
+                        echo "$line" | jq -r '"\(.timestamp) [\(.id)] \(.type | ascii_upcase) \(.method // "") \(.url // .status_code) \(if .action == "redirect" then "→ \(.redirect.scheme)://\(.redirect.host):\(.redirect.port)" elif .duration_ms then "(\(.duration_ms)ms)" else "" end)"' 2>/dev/null || echo "$line"
+                    done
+                else
+                    cat "$latest_log" | while read line; do
+                        echo "$line" | jq -r '"\(.timestamp) [\(.id)] \(.type | ascii_upcase) \(.method // "") \(.url // .status_code) \(if .action == "redirect" then "→ \(.redirect.scheme)://\(.redirect.host):\(.redirect.port)" elif .duration_ms then "(\(.duration_ms)ms)" else "" end)"' 2>/dev/null || echo "$line"
+                    done | { [[ -n "$filter" ]] && grep -i "$filter" || cat; }
+                fi
+            fi
+            return
+        fi
+    fi
+    
+    # Fallback to old log format
     local log_file="$SCRIPT_DIR/mitmproxy.log"
     if [[ -f "$log_file" ]]; then
         echo "📄 Tailing logs from $log_file (press Ctrl+C to stop)"
-        tail -f "$log_file"
+        if [[ "$follow" == "true" ]]; then
+            tail -f "$log_file"
+        else
+            cat "$log_file"
+        fi
     else
-        echo "❌ Log file not found: $log_file"
+        echo "❌ No log files found"
     fi
 }
 
