@@ -63,6 +63,8 @@ print_help() {
     echo "  delete-rule <id> --profile <profile>"
     echo "  doctor [--json]           Check dependencies"
     echo "  export --profile <profile>  Output all enabled rules as JSON"
+    echo "  import-proxyman <file> --profile <profile>  Import Proxyman rules"
+    echo "  export-proxyman --profile <profile> --output <file>  Export to Proxyman format"
     echo "  help                      Show this help message"
     echo "  version                   Show version info"
     echo "  which                     Show the resolved CLI path"
@@ -391,6 +393,214 @@ install_cli() {
     fi
 }
 
+create_profile() {
+    local profile="$1"
+    if [[ -z "$profile" ]]; then
+        echo "Usage: $SCRIPT_NAME create-profile <name>"
+        exit 1
+    fi
+    
+    if jq -e ".\"$profile\"" "$RULES_FILE" >/dev/null 2>&1; then
+        echo "❌ Profile '$profile' already exists"
+        exit 1
+    fi
+    
+    jq --arg profile "$profile" '. + {($profile): []}' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+    echo "✅ Created profile '$profile'"
+}
+
+describe_rule() {
+    local rule_id="$1"
+    shift
+    local profile
+    profile=$(get_profile "$@")
+    
+    if [[ -z "$rule_id" ]]; then
+        echo "Usage: $SCRIPT_NAME describe <rule_id> --profile <profile>"
+        exit 1
+    fi
+    
+    local rule=$(jq --arg id "$rule_id" ".\"$profile\"[] | select(.id == \$id)" "$RULES_FILE")
+    if [[ -z "$rule" ]]; then
+        echo "❌ Rule '$rule_id' not found in profile '$profile'"
+        exit 1
+    fi
+    
+    echo "$rule" | jq .
+}
+
+export_rules() {
+    local profile
+    profile=$(get_profile "$@")
+    
+    jq ".\"$profile\"" "$RULES_FILE"
+}
+
+update_cli() {
+    echo "🔄 Checking for updates..."
+    cd "$SCRIPT_DIR" || exit 1
+    
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        git pull origin main
+        echo "✅ Updated to latest version"
+    else
+        echo "❌ Not a git repository. Please update manually."
+        exit 1
+    fi
+}
+
+import_proxyman() {
+    local file="$1"
+    shift
+    local profile=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --profile)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --profile"
+                exit 1
+            fi
+            profile="$2"
+            shift 2
+            ;;
+        *) shift ;;
+        esac
+    done
+    
+    if [[ -z "$file" || -z "$profile" ]]; then
+        echo "Usage: $SCRIPT_NAME import-proxyman <file> --profile <profile>"
+        exit 1
+    fi
+    
+    if [[ ! -f "$file" ]]; then
+        echo "❌ File not found: $file"
+        exit 1
+    fi
+    
+    # Create profile if it doesn't exist
+    if ! jq -e ".\"$profile\"" "$RULES_FILE" >/dev/null 2>&1; then
+        jq --arg profile "$profile" '. + {($profile): []}' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+        echo "📁 Created new profile: $profile"
+    fi
+    
+    # Parse Proxyman format (assuming JSON with rules array)
+    # Proxyman typically exports rules with: name, matching (with url pattern), action (with host/port)
+    local imported_count=0
+    
+    # Try to parse as Proxyman JSON format
+    if jq -e '.rules' "$file" >/dev/null 2>&1; then
+        # Proxyman format detected
+        jq -c '.rules[]' "$file" 2>/dev/null | while read -r rule; do
+            local name=$(echo "$rule" | jq -r '.name // ""')
+            local url_pattern=$(echo "$rule" | jq -r '.matching.url // ""')
+            local dest_host=$(echo "$rule" | jq -r '.action.host // "localhost"')
+            local dest_port=$(echo "$rule" | jq -r '.action.port // 8080')
+            local enabled=$(echo "$rule" | jq -r '.enabled // true')
+            
+            if [[ -n "$name" && -n "$url_pattern" ]]; then
+                # Convert Proxyman wildcard patterns to regex
+                local regex_pattern=$(echo "$url_pattern" | sed 's/\*/\.\*/g' | sed 's/\?/\\?/g')
+                
+                # Generate a safe rule ID from the name
+                local rule_id=$(echo "$name" | tr ' ' '_' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]//g')
+                
+                # Add the rule
+                jq --arg id "$rule_id" --arg regex "$regex_pattern" --arg host "$dest_host" \
+                   --argjson port "$dest_port" --arg profile "$profile" --argjson enabled "$enabled" '
+                .[$profile] += [{
+                    id: $id,
+                    enabled: $enabled,
+                    regex: $regex,
+                    host: $host,
+                    port: $port,
+                    scheme: "http"
+                }]' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+                
+                ((imported_count++))
+                echo "  ✓ Imported: $name → $dest_host:$dest_port"
+            fi
+        done
+    else
+        echo "❌ Unsupported file format. Expected Proxyman JSON export."
+        exit 1
+    fi
+    
+    echo "✅ Imported $imported_count rules to profile '$profile'"
+}
+
+export_proxyman() {
+    local profile
+    profile=$(get_profile "$@")
+    local output=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --output)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --output"
+                exit 1
+            fi
+            output="$2"
+            shift 2
+            ;;
+        --profile)
+            shift 2
+            ;;
+        *) shift ;;
+        esac
+    done
+    
+    if [[ -z "$output" ]]; then
+        echo "Usage: $SCRIPT_NAME export-proxyman --profile <profile> --output <file>"
+        exit 1
+    fi
+    
+    # Export in Proxyman-compatible format
+    echo "{" >"$output"
+    echo '  "version": "1.0",' >>"$output"
+    echo '  "rules": [' >>"$output"
+    
+    local first=true
+    jq -c ".\"$profile\"[]" "$RULES_FILE" 2>/dev/null | while read -r rule; do
+        if [[ "$first" != "true" ]]; then
+            echo "," >>"$output"
+        fi
+        first=false
+        
+        local id=$(echo "$rule" | jq -r .id)
+        local enabled=$(echo "$rule" | jq -r .enabled)
+        local regex=$(echo "$rule" | jq -r .regex)
+        local host=$(echo "$rule" | jq -r .host)
+        local port=$(echo "$rule" | jq -r .port)
+        
+        # Convert regex back to Proxyman wildcard format (simplified)
+        local url_pattern=$(echo "$regex" | sed 's/\.\*/\*/g' | sed 's/\\?/?/g')
+        
+        cat >>"$output" <<EOF
+    {
+      "name": "$id",
+      "enabled": $enabled,
+      "matching": {
+        "url": "$url_pattern",
+        "method": "*"
+      },
+      "action": {
+        "type": "redirect",
+        "host": "$host",
+        "port": $port
+      }
+    }
+EOF
+    done
+    
+    echo "" >>"$output"
+    echo "  ]" >>"$output"
+    echo "}" >>"$output"
+    
+    echo "✅ Exported profile '$profile' to $output"
+}
+
 case "$command" in
 list | ls | show) list_rules "$@" ;;
 toggle) toggle_rule "$@" ;;
@@ -405,6 +615,8 @@ delete-rule) delete_rule "$@" ;;
 doctor) doctor "$@" ;;
 describe) describe_rule "$@" ;;
 export) export_rules "$@" ;;
+import-proxyman) import_proxyman "$@" ;;
+export-proxyman) export_proxyman "$@" ;;
 version | --version | -v) echo "$SCRIPT_NAME version $VERSION" ;;
 help | --help | -h) print_help ;;
 *) print_help ;;
