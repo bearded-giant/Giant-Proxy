@@ -39,5 +39,16 @@
       "host": "localhost",
       "port": 3000
     }
+  ],
+  "proxyman-imported": [],
+  "proxyman-test": [
+    {
+      "id": "stage_to_featurebranch",
+      "enabled": true,
+      "regex": "^(https)://.*\\.admin\\.stage\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "feature-311-wl-and-tests.stage.rechargeapps.net",
+      "port": 443,
+      "scheme": "https"
+    }
   ]
 }

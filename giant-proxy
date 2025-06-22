@@ -640,8 +640,44 @@ import_proxyman() {
     local imported_count=0
     
     # Try to parse as Proxyman JSON format
-    if jq -e '.rules' "$file" >/dev/null 2>&1; then
-        # Proxyman format detected
+    # Check if it's an array (Proxyman Map Remote format)
+    if jq -e '.[0]' "$file" >/dev/null 2>&1; then
+        # Proxyman Map Remote format detected
+        jq -c '.[]' "$file" 2>/dev/null | while read -r rule; do
+            local name=$(echo "$rule" | jq -r '.name // ""')
+            local regex_pattern=$(echo "$rule" | jq -r '.mapFromURL // ""')
+            local dest_scheme=$(echo "$rule" | jq -r '.toURLComponent.scheme // "http"')
+            local dest_host=$(echo "$rule" | jq -r '.toURLComponent.host // "localhost"')
+            local dest_port=$(echo "$rule" | jq -r '.toURLComponent.port // "8080"')
+            local enabled=$(echo "$rule" | jq -r '.isEnabled // true')
+            
+            if [[ -n "$name" && -n "$regex_pattern" ]]; then
+                # Proxyman uses escaped slashes, we need to unescape them
+                regex_pattern=$(echo "$regex_pattern" | sed 's/\\\//\//g')
+                
+                # Generate a safe rule ID from the name
+                local rule_id=$(echo "$name" | tr ' ' '_' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]//g')
+                
+                # Add the rule
+                jq --arg id "$rule_id" --arg regex "$regex_pattern" --arg host "$dest_host" \
+                   --argjson port "$dest_port" --arg profile "$profile" --argjson enabled "$enabled" \
+                   --arg scheme "$dest_scheme" '
+                .[$profile] += [{
+                    id: $id,
+                    enabled: $enabled,
+                    regex: $regex,
+                    host: $host,
+                    port: $port,
+                    scheme: $scheme
+                }]' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+                
+                ((imported_count++))
+                echo "  ✓ Imported: $name → $dest_scheme://$dest_host:$dest_port"
+            fi
+        done
+    # Check for other format with .rules array
+    elif jq -e '.rules' "$file" >/dev/null 2>&1; then
+        # Alternative Proxyman format
         jq -c '.rules[]' "$file" 2>/dev/null | while read -r rule; do
             local name=$(echo "$rule" | jq -r '.name // ""')
             local url_pattern=$(echo "$rule" | jq -r '.matching.url // ""')
@@ -684,6 +720,7 @@ export_proxyman() {
     local profile
     profile=$(get_profile "$@")
     local output=""
+    local format="simple"  # simple or map-remote
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -695,6 +732,14 @@ export_proxyman() {
             output="$2"
             shift 2
             ;;
+        --format)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --format"
+                exit 1
+            fi
+            format="$2"
+            shift 2
+            ;;
         --profile)
             shift 2
             ;;
@@ -703,32 +748,91 @@ export_proxyman() {
     done
     
     if [[ -z "$output" ]]; then
-        echo "Usage: $SCRIPT_NAME export-proxyman --profile <profile> --output <file>"
+        echo "Usage: $SCRIPT_NAME export-proxyman --profile <profile> --output <file> [--format <simple|map-remote>]"
         exit 1
     fi
     
-    # Export in Proxyman-compatible format
-    echo "{" >"$output"
-    echo '  "version": "1.0",' >>"$output"
-    echo '  "rules": [' >>"$output"
-    
-    local first=true
-    jq -c ".\"$profile\"[]" "$RULES_FILE" 2>/dev/null | while read -r rule; do
-        if [[ "$first" != "true" ]]; then
-            echo "," >>"$output"
-        fi
-        first=false
+    if [[ "$format" == "map-remote" ]]; then
+        # Export in Proxyman Map Remote format (array)
+        echo "[" >"$output"
         
-        local id=$(echo "$rule" | jq -r .id)
-        local enabled=$(echo "$rule" | jq -r .enabled)
-        local regex=$(echo "$rule" | jq -r .regex)
-        local host=$(echo "$rule" | jq -r .host)
-        local port=$(echo "$rule" | jq -r .port)
+        local first=true
+        jq -c ".\"$profile\"[]" "$RULES_FILE" 2>/dev/null | while read -r rule; do
+            if [[ "$first" != "true" ]]; then
+                echo "," >>"$output"
+            fi
+            first=false
+            
+            local id=$(echo "$rule" | jq -r .id)
+            local enabled=$(echo "$rule" | jq -r .enabled)
+            local regex=$(echo "$rule" | jq -r .regex)
+            local host=$(echo "$rule" | jq -r .host)
+            local port=$(echo "$rule" | jq -r .port)
+            local scheme=$(echo "$rule" | jq -r '.scheme // "http"')
+            
+            # Escape slashes for Proxyman
+            local escaped_regex=$(echo "$regex" | sed 's/\//\\\//g')
+            
+            # Generate a UUID-like ID (simplified)
+            local uuid=$(uuidgen 2>/dev/null || echo "$(date +%s)-$(echo $RANDOM)")
+            
+            cat >>"$output" <<EOF
+  {
+    "id": "$uuid",
+    "isIncludingPaths": true,
+    "name": "$id",
+    "fromURLComponent": {
+      "scheme": "",
+      "host": "",
+      "port": "",
+      "path": "",
+      "query": ""
+    },
+    "method": {
+      "any": {}
+    },
+    "preserveHostHeader": false,
+    "graphQLQueryName": null,
+    "isEnabled": $enabled,
+    "toURLComponent": {
+      "scheme": "$scheme",
+      "host": "$host",
+      "port": "$port",
+      "path": "/",
+      "query": ""
+    },
+    "mapFromURL": "$escaped_regex",
+    "preserveOriginalURL": false,
+    "regex": "useRegex"
+  }
+EOF
+        done
         
-        # Convert regex back to Proxyman wildcard format (simplified)
-        local url_pattern=$(echo "$regex" | sed 's/\.\*/\*/g' | sed 's/\\?/?/g')
+        echo "" >>"$output"
+        echo "]" >>"$output"
+    else
+        # Export in simple Proxyman format
+        echo "{" >"$output"
+        echo '  "version": "1.0",' >>"$output"
+        echo '  "rules": [' >>"$output"
         
-        cat >>"$output" <<EOF
+        local first=true
+        jq -c ".\"$profile\"[]" "$RULES_FILE" 2>/dev/null | while read -r rule; do
+            if [[ "$first" != "true" ]]; then
+                echo "," >>"$output"
+            fi
+            first=false
+            
+            local id=$(echo "$rule" | jq -r .id)
+            local enabled=$(echo "$rule" | jq -r .enabled)
+            local regex=$(echo "$rule" | jq -r .regex)
+            local host=$(echo "$rule" | jq -r .host)
+            local port=$(echo "$rule" | jq -r .port)
+            
+            # Convert regex back to Proxyman wildcard format (simplified)
+            local url_pattern=$(echo "$regex" | sed 's/\.\*/\*/g' | sed 's/\\?/?/g')
+            
+            cat >>"$output" <<EOF
     {
       "name": "$id",
       "enabled": $enabled,
@@ -743,13 +847,14 @@ export_proxyman() {
       }
     }
 EOF
-    done
+        done
+        
+        echo "" >>"$output"
+        echo "  ]" >>"$output"
+        echo "}" >>"$output"
+    fi
     
-    echo "" >>"$output"
-    echo "  ]" >>"$output"
-    echo "}" >>"$output"
-    
-    echo "✅ Exported profile '$profile' to $output"
+    echo "✅ Exported profile '$profile' to $output (format: $format)"
 }
 
 case "$command" in
