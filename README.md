@@ -115,11 +115,14 @@ giant-proxy logs --no-follow --filter "error"
 
 ### Proxyman Migration
 ```bash
-# Import rules from Proxyman
-giant-proxy import-proxyman proxyman-rules.json --profile imported
+# Import rules from Proxyman (supports Map Remote format)
+giant-proxy import-proxyman proxyman_map_remote_rules.config --profile imported
 
-# Export rules to Proxyman format
+# Export rules to Proxyman format (simple format)
 giant-proxy export-proxyman --profile prod --output proxyman-export.json
+
+# Export rules to Proxyman Map Remote format
+giant-proxy export-proxyman --profile prod --output proxyman-map-remote.json --format map-remote
 ```
 
 ### Rule Management
