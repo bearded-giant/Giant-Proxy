@@ -59,7 +59,7 @@ print_help() {
     echo "  install                   Symlink this CLI to ~/.local/bin"
     echo "  update                    Pull latest version and sync"
     echo "  create-profile <name>     Create a new profile in rules.json"
-    echo "  add-rule <id> --profile <profile> --regex <r> --host <h> --port <p>"
+    echo "  add-rule <id> --profile <profile> --regex <r> --host <h> --port <p> [--scheme <http|https>]"
     echo "  delete-rule <id> --profile <profile>"
     echo "  doctor [--json]           Check dependencies"
     echo "  export --profile <profile>  Output all enabled rules as JSON"
@@ -79,13 +79,14 @@ print_help() {
     echo "Options:"
     echo "  --profile <name>          Use a specific profile"
     echo "  --verbose                 Show detailed rule output"
+    echo "  --preserve-https          Maintain HTTPS for redirected requests"
     echo ""
 }
 
 add_rule() {
     local rule_id="$1"
     shift
-    local profile="" regex="" host="" port=""
+    local profile="" regex="" host="" port="" scheme="http"
     while [[ $# -gt 0 ]]; do
         case "$1" in
         --profile)
@@ -120,20 +121,29 @@ add_rule() {
             port="$2"
             shift 2
             ;;
+        --scheme)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "❌ Missing value for --scheme"
+                exit 1
+            fi
+            scheme="$2"
+            shift 2
+            ;;
         *) shift ;;
         esac
     done
     if [[ -z "$profile" || -z "$rule_id" || -z "$regex" || -z "$host" || -z "$port" ]]; then
-        echo "Usage: $SCRIPT_NAME add-rule <rule_id> --profile <profile> --regex <pattern> --host <host> --port <port>"
+        echo "Usage: $SCRIPT_NAME add-rule <rule_id> --profile <profile> --regex <pattern> --host <host> --port <port> [--scheme <http|https>]"
         exit 1
     fi
-    jq --arg id "$rule_id" --arg regex "$regex" --arg host "$host" --argjson port "$port" '
+    jq --arg id "$rule_id" --arg regex "$regex" --arg host "$host" --argjson port "$port" --arg scheme "$scheme" '
     .[$ARGS.named.profile] += [{
       id: $id,
       enabled: true,
       regex: $regex,
       host: $host,
-      port: $port
+      port: $port,
+      scheme: $scheme
     }]' --arg profile "$profile" "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
     echo "✅ Rule '$rule_id' added to profile '$profile'"
 }
@@ -219,36 +229,74 @@ toggle_rule() {
 start_proxy() {
     local profile
     profile=$(get_profile "$@")
+    local preserve_https=false
+    
+    # Check for --preserve-https flag
+    for arg in "$@"; do
+        [[ "$arg" == "--preserve-https" ]] && preserve_https=true
+    done
+    
     local script="$SCRIPT_DIR/generated_proxy_map.py"
 
     echo "import re" >"$script"
     echo "from mitmproxy import http" >>"$script"
+    echo "import ssl" >>"$script"
+    echo "import os" >>"$script"
+    echo "" >>"$script"
+    echo "preserve_https = $preserve_https" >>"$script"
     echo "rules = [" >>"$script"
 
     jq -c ".\"$profile\"[] | select(.enabled == true)" "$RULES_FILE" | while read -r rule; do
         regex=$(echo "$rule" | jq -r .regex)
         host=$(echo "$rule" | jq -r .host)
         port=$(echo "$rule" | jq -r .port)
-        echo "  (re.compile(r\"$regex\"), \"$host\", $port)," >>"$script"
+        scheme=$(echo "$rule" | jq -r '.scheme // "http"')
+        echo "  (re.compile(r\"$regex\"), \"$host\", $port, \"$scheme\")," >>"$script"
     done
 
     echo "]" >>"$script"
     cat <<'EOF' >>"$script"
 def request(flow: http.HTTPFlow) -> None:
     url = flow.request.pretty_url
-    for pattern, host, port in rules:
+    original_scheme = flow.request.scheme
+    
+    for pattern, host, port, rule_scheme in rules:
         if pattern.match(url):
-            print(f"Matched: {url} → http://{host}:{port}")
+            # Determine the target scheme
+            if preserve_https and original_scheme == "https":
+                target_scheme = "https"
+                # For HTTPS preservation, use standard HTTPS port if targeting local development
+                if port in [3000, 3001, 8080, 8000, 5000, 5173, 4200]:
+                    # These are common dev server ports, keep them as-is
+                    target_port = port
+                else:
+                    target_port = port
+            else:
+                target_scheme = rule_scheme
+                target_port = port
+            
+            print(f"Matched: {url} → {target_scheme}://{host}:{target_port}")
             flow.request.host = host
-            flow.request.port = port
-            flow.request.scheme = "http"
+            flow.request.port = target_port
+            flow.request.scheme = target_scheme
             break
 EOF
 
-    echo "{ \"profile\": \"$profile\", \"started_at\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\" }" >"$SCRIPT_DIR/last_run.json"
-    mitmdump -s "$script" >"$SCRIPT_DIR/mitmproxy.log" 2>&1 &
-    echo "✅ mitmdump started in background (PID $!)"
+    # Add mitmdump options for better HTTPS handling
+    local mitmdump_opts=""
+    if [[ "$preserve_https" == "true" ]]; then
+        mitmdump_opts="--ssl-insecure"
+    fi
+
+    echo "{ \"profile\": \"$profile\", \"preserve_https\": $preserve_https, \"started_at\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\" }" >"$SCRIPT_DIR/last_run.json"
+    mitmdump $mitmdump_opts -s "$script" >"$SCRIPT_DIR/mitmproxy.log" 2>&1 &
+    local pid=$!
+    echo "✅ mitmdump started in background (PID $pid)"
     echo "📝 Logs: tail -f $SCRIPT_DIR/mitmproxy.log"
+    
+    if [[ "$preserve_https" == "true" ]]; then
+        echo "🔒 HTTPS preservation enabled - local services should support HTTPS"
+    fi
 }
 
 status() {
