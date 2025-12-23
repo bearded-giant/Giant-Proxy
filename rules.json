@@ -94,6 +94,30 @@
       "host": "localhost",
       "port": 3000,
       "scheme": "http"
+    },
+    {
+      "id": "prestage_remix_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.prestage\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "localhost",
+      "port": 3000,
+      "scheme": "http",
+      "path": "",
+      "query": "",
+      "preserveOriginalURL": true,
+      "preserveHostHeader": true
+    },
+    {
+      "id": "prestage_remix_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.prestage\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "localhost",
+      "port": 3000,
+      "scheme": "http",
+      "path": "",
+      "query": "",
+      "preserveOriginalURL": true,
+      "preserveHostHeader": true
     }
   ],
   "stage": [

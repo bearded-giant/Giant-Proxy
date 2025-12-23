@@ -1,6 +1,6 @@
 # 🛡️ Giant Proxy
 
-A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection using named profiles. Built for local testing of remote services as a lightweight alternative to tools like Proxyman.
+A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirection using named profiles. Built for local testing of remote services. Supports both mitmproxy and Proxyman as backends.
 
 ## Features
 
@@ -13,6 +13,7 @@ A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirecti
 - **NEW: HTTPS preservation for local development**
 - **NEW: Structured JSON request/response logging**
 - **NEW: Proxyman import/export compatibility**
+- **NEW: Proxyman backend** for Node.js/SSR interception (see [PROXYMAN_USAGE.md](PROXYMAN_USAGE.md))
 - Start and stop `mitmdump` cleanly in the background
 - Bash autocompletion included
 
@@ -21,6 +22,7 @@ A Bash CLI wrapper around `mitmproxy` for managing regex-based request redirecti
 - **HTTPS Preservation**: Use `--preserve-https` to maintain secure connections when redirecting to local services
 - **Structured Logging**: JSON-formatted request/response logs with filtering, timing, and correlation IDs
 - **Proxyman Compatibility**: Import/export rules to easily migrate from Proxyman
+- **Proxyman Backend**: Use Proxyman instead of mitmproxy for Node.js/SSR traffic interception
 - **Enhanced CLI**: New commands for profile management, rule inspection, and git updates
 
 ## Setup
@@ -63,9 +65,10 @@ export PATH="$HOME/.local/bin:$PATH"
 | `create-profile <name>` | Add a new profile                          |
 | `start`, `on`           | Start proxy for profile (backgrounded)     |
 | `stop`, `off`           | Stop running proxy                         |
-| `status`                | Show if mitmdump is running                |
+| `status`                | Show if proxy is running                   |
 | `logs`                  | View structured logs with filtering        |
-| `doctor`                | Check mitmdump/cert dependencies           |
+| `config`                | Show/set backend configuration             |
+| `doctor`                | Check dependencies for active backend      |
 | `doctor --verbose`      | Detailed diagnostic output                 |
 | `export`                | Output active rules in JSON                |
 | `import-proxyman`       | Import rules from Proxyman                 |
@@ -79,11 +82,12 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Files
 
 - `giant-proxy` — the CLI script
-- `rules.json` — profiles + rules  
-- `logs/` — structured JSON logs (new)
+- `rules.json` — profiles + rules
+- `logs/` — structured JSON logs
 - `mitmproxy.log` — legacy log file
 - `last_run.json` — info on last started profile
 - `generated_proxy_map.py` — auto-generated mitmproxy script
+- `~/.giant-proxy/` — config directory (backend settings, generated Proxyman configs)
 
 ## Examples
 
@@ -134,3 +138,18 @@ giant-proxy add-rule api_rule --profile dev \
   --port 3000 \
   --scheme https
 ```
+
+### Proxyman Backend
+
+For Node.js/SSR traffic that bypasses HTTP_PROXY, use Proxyman as the backend:
+
+```bash
+# Switch to Proxyman backend
+giant-proxy config backend proxyman
+
+# Start/stop works the same way
+giant-proxy start --profile preprod
+giant-proxy stop
+```
+
+See [PROXYMAN_USAGE.md](PROXYMAN_USAGE.md) for full setup and usage details.

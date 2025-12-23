@@ -81,13 +81,14 @@ _generate_proxyman_config() {
     _ensure_config_dir
 
     # Generate Proxyman JSON array from rules
+    local rules_json
     if [[ -n "$rule_id" ]]; then
         # Single rule mode
-        jq --arg profile "$profile" --arg rule_id "$rule_id" '
+        rules_json=$(jq --arg profile "$profile" --arg rule_id "$rule_id" '
             .[$profile] // [] |
             map(select(.id == $rule_id and .enabled == true)) |
             map({
-                id: ("GP-" + .id + "-" + (now | floor | tostring)),
+                id: ("GP-" + .id),
                 name: .id,
                 isEnabled: true,
                 mapFromURL: .regex,
@@ -106,15 +107,15 @@ _generate_proxyman_config() {
                 isIncludingPaths: false,
                 graphQLQueryName: null
             })
-        ' "$RULES_FILE" > "$output_file"
+        ' "$RULES_FILE")
     else
         # All enabled rules mode
-        jq --arg profile "$profile" '
+        rules_json=$(jq --arg profile "$profile" '
             .[$profile] // [] |
             map(select(.enabled == true)) |
             to_entries | map(.value + {_idx: .key}) |
             map({
-                id: ("GP-" + .id + "-" + (now | floor | tostring) + "-" + (._idx | tostring)),
+                id: ("GP-" + .id + "-" + (._idx | tostring)),
                 name: .id,
                 isEnabled: true,
                 mapFromURL: .regex,
@@ -133,8 +134,20 @@ _generate_proxyman_config() {
                 isIncludingPaths: false,
                 graphQLQueryName: null
             })
-        ' "$RULES_FILE" > "$output_file"
+        ' "$RULES_FILE")
     fi
+
+    # Base64 encode the rules and wrap in Proxyman CLI format
+    local encoded_data=$(echo "$rules_json" | base64)
+
+    cat > "$output_file" <<EOF
+{
+  "mapRemoteData": {
+    "data": "$encoded_data",
+    "isEnabled": true
+  }
+}
+EOF
 
     echo "$output_file"
 }
@@ -177,7 +190,10 @@ _start_proxyman() {
     fi
 
     local config_file=$(_generate_proxyman_config "$profile" "$rule_id")
-    local rule_count=$(jq 'length' "$config_file")
+
+    # Decode base64 to count rules
+    local decoded_rules=$(jq -r '.mapRemoteData.data' "$config_file" | base64 -d)
+    local rule_count=$(echo "$decoded_rules" | jq 'length')
 
     if [[ "$rule_count" -eq 0 ]]; then
         echo "❌ No enabled rules found"
@@ -187,11 +203,23 @@ _start_proxyman() {
         exit 1
     fi
 
+    # Quit Proxyman (required for import)
+    if pgrep -f "Proxyman" >/dev/null; then
+        echo "⏳ Closing Proxyman for import..."
+        osascript -e 'quit app "Proxyman"' 2>/dev/null
+        sleep 1
+    fi
+
     # Import config into Proxyman
-    "$cli" import "$config_file" 2>/dev/null
+    "$cli" import --input "$config_file"
+
+    # Reopen Proxyman
+    echo "⏳ Starting Proxyman..."
+    open -a Proxyman
+    sleep 1
 
     # Save state
-    local active_rules=$(jq -r '[.[].name] | join(",")' "$config_file")
+    local active_rules=$(echo "$decoded_rules" | jq -r '[.[].name] | join(",")')
     echo "{ \"backend\": \"proxyman\", \"profile\": \"$profile\", \"active_rules\": \"$active_rules\", \"started_at\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\", \"config_file\": \"$config_file\" }" >"$SCRIPT_DIR/last_run.json"
 
     echo "✅ Proxyman rules imported ($rule_count rules)"
@@ -200,7 +228,6 @@ _start_proxyman() {
     else
         echo "   Profile: $profile"
     fi
-    echo "   Config: $config_file"
 }
 
 _stop_proxyman() {
@@ -210,13 +237,28 @@ _stop_proxyman() {
     if [[ ! -x "$cli" ]]; then
         echo "⚠️  proxyman-cli not found, skipping"
     else
-        # Import empty config to clear rules
-        echo "[]" > "$CONFIG_DIR/tmp/active-proxyman.config"
-        "$cli" import "$CONFIG_DIR/tmp/active-proxyman.config" 2>/dev/null
+        # Quit Proxyman (required for import)
+        if pgrep -f "Proxyman" >/dev/null; then
+            echo "⏳ Closing Proxyman..."
+            osascript -e 'quit app "Proxyman"' 2>/dev/null
+            sleep 1
+        fi
+
+        # Import empty config to clear rules (base64 encoded empty array)
+        local empty_data=$(echo "[]" | base64)
+        cat > "$CONFIG_DIR/tmp/active-proxyman.config" <<EOF
+{
+  "mapRemoteData": {
+    "data": "$empty_data",
+    "isEnabled": true
+  }
+}
+EOF
+        "$cli" import --input "$CONFIG_DIR/tmp/active-proxyman.config"
     fi
 
     echo "{ \"backend\": \"proxyman\", \"stopped_at\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\" }" >"$SCRIPT_DIR/last_run.json"
-    echo "🛑 Proxyman rules cleared"
+    echo "🛑 Proxyman stopped"
 }
 
 print_help() {
@@ -975,7 +1017,7 @@ import_proxyman() {
     # Check if it's an array (Proxyman Map Remote format)
     if jq -e '.[0]' "$file" >/dev/null 2>&1; then
         # Proxyman Map Remote format detected
-        jq -c '.[]' "$file" 2>/dev/null | while read -r rule; do
+        while read -r rule; do
             local name=$(echo "$rule" | jq -r '.name // ""')
             local regex_pattern=$(echo "$rule" | jq -r '.mapFromURL // ""')
             local dest_scheme=$(echo "$rule" | jq -r '.toURLComponent.scheme // "http"')
@@ -1027,11 +1069,11 @@ import_proxyman() {
                 ((imported_count++))
                 echo "  ✓ Imported to $target_profile: $name → $dest_scheme://$dest_host:$dest_port"
             fi
-        done
+        done < <(jq -c '.[]' "$file" 2>/dev/null)
     # Check for other format with .rules array
     elif jq -e '.rules' "$file" >/dev/null 2>&1; then
         # Alternative Proxyman format
-        jq -c '.rules[]' "$file" 2>/dev/null | while read -r rule; do
+        while read -r rule; do
             local name=$(echo "$rule" | jq -r '.name // ""')
             local url_pattern=$(echo "$rule" | jq -r '.matching.url // ""')
             local dest_host=$(echo "$rule" | jq -r '.action.host // "localhost"')
@@ -1060,13 +1102,17 @@ import_proxyman() {
                 ((imported_count++))
                 echo "  ✓ Imported: $name → $dest_host:$dest_port"
             fi
-        done
+        done < <(jq -c '.rules[]' "$file" 2>/dev/null)
     else
         echo "❌ Unsupported file format. Expected Proxyman JSON export."
         exit 1
     fi
-    
-    echo "✅ Imported $imported_count rules to profile '$profile'"
+
+    if [[ "$auto_detect" == "true" ]]; then
+        echo "✅ Imported $imported_count rules (auto-detected profiles)"
+    else
+        echo "✅ Imported $imported_count rules to profile '$profile'"
+    fi
 }
 
 export_proxyman() {
