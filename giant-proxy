@@ -12,6 +12,8 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 
 RULES_FILE="$SCRIPT_DIR/rules.json"
+CONFIG_DIR="$HOME/.giant-proxy"
+CONFIG_FILE="$CONFIG_DIR/config.json"
 
 command="$1"
 shift || true
@@ -45,6 +47,178 @@ is_verbose() {
     return 1
 }
 
+# === Config Helpers ===
+_ensure_config_dir() {
+    if [[ ! -d "$CONFIG_DIR" ]]; then
+        mkdir -p "$CONFIG_DIR/tmp"
+    fi
+}
+
+_load_config() {
+    _ensure_config_dir
+    if [[ -f "$CONFIG_FILE" ]]; then
+        cat "$CONFIG_FILE"
+    else
+        echo '{"backend":"mitmproxy","proxyman_cli":"/Applications/Proxyman.app/Contents/MacOS/proxyman-cli"}'
+    fi
+}
+
+_save_config() {
+    local config="$1"
+    _ensure_config_dir
+    echo "$config" > "$CONFIG_FILE"
+}
+
+_get_backend() {
+    _load_config | jq -r '.backend // "mitmproxy"'
+}
+
+_generate_proxyman_config() {
+    local profile="$1"
+    local rule_id="$2"  # optional - if empty, use all enabled rules
+    local output_file="$CONFIG_DIR/tmp/active-proxyman.config"
+
+    _ensure_config_dir
+
+    # Generate Proxyman JSON array from rules
+    if [[ -n "$rule_id" ]]; then
+        # Single rule mode
+        jq --arg profile "$profile" --arg rule_id "$rule_id" '
+            .[$profile] // [] |
+            map(select(.id == $rule_id and .enabled == true)) |
+            map({
+                id: ("GP-" + .id + "-" + (now | floor | tostring)),
+                name: .id,
+                isEnabled: true,
+                mapFromURL: .regex,
+                regex: "useRegex",
+                method: {any: {}},
+                toURLComponent: {
+                    scheme: (.scheme // "http"),
+                    host: .host,
+                    port: ((.port // 8080) | tostring),
+                    path: (.path // ""),
+                    query: (.query // "")
+                },
+                preserveOriginalURL: (.preserveOriginalURL // true),
+                preserveHostHeader: (.preserveHostHeader // true),
+                fromURLComponent: {query:"",port:"",path:"",host:"",scheme:""},
+                isIncludingPaths: false,
+                graphQLQueryName: null
+            })
+        ' "$RULES_FILE" > "$output_file"
+    else
+        # All enabled rules mode
+        jq --arg profile "$profile" '
+            .[$profile] // [] |
+            map(select(.enabled == true)) |
+            to_entries | map(.value + {_idx: .key}) |
+            map({
+                id: ("GP-" + .id + "-" + (now | floor | tostring) + "-" + (._idx | tostring)),
+                name: .id,
+                isEnabled: true,
+                mapFromURL: .regex,
+                regex: "useRegex",
+                method: {any: {}},
+                toURLComponent: {
+                    scheme: (.scheme // "http"),
+                    host: .host,
+                    port: ((.port // 8080) | tostring),
+                    path: (.path // ""),
+                    query: (.query // "")
+                },
+                preserveOriginalURL: (.preserveOriginalURL // true),
+                preserveHostHeader: (.preserveHostHeader // true),
+                fromURLComponent: {query:"",port:"",path:"",host:"",scheme:""},
+                isIncludingPaths: false,
+                graphQLQueryName: null
+            })
+        ' "$RULES_FILE" > "$output_file"
+    fi
+
+    echo "$output_file"
+}
+
+_start_proxyman() {
+    local profile=""
+    local rule_id=""
+    local preserve_https=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --profile)
+            profile="$2"
+            shift 2
+            ;;
+        --rule)
+            rule_id="$2"
+            shift 2
+            ;;
+        --preserve-https)
+            preserve_https=true
+            shift
+            ;;
+        *) shift ;;
+        esac
+    done
+
+    if [[ -z "$profile" ]]; then
+        echo "❌ Missing --profile <name>"
+        exit 1
+    fi
+
+    local config=$(_load_config)
+    local cli=$(echo "$config" | jq -r '.proxyman_cli')
+
+    if [[ ! -x "$cli" ]]; then
+        echo "❌ proxyman-cli not found at: $cli"
+        echo "   Set path with: giant-proxy config proxyman_cli /path/to/proxyman-cli"
+        exit 1
+    fi
+
+    local config_file=$(_generate_proxyman_config "$profile" "$rule_id")
+    local rule_count=$(jq 'length' "$config_file")
+
+    if [[ "$rule_count" -eq 0 ]]; then
+        echo "❌ No enabled rules found"
+        if [[ -n "$rule_id" ]]; then
+            echo "   Rule '$rule_id' not found or not enabled in profile '$profile'"
+        fi
+        exit 1
+    fi
+
+    # Import config into Proxyman
+    "$cli" import "$config_file" 2>/dev/null
+
+    # Save state
+    local active_rules=$(jq -r '[.[].name] | join(",")' "$config_file")
+    echo "{ \"backend\": \"proxyman\", \"profile\": \"$profile\", \"active_rules\": \"$active_rules\", \"started_at\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\", \"config_file\": \"$config_file\" }" >"$SCRIPT_DIR/last_run.json"
+
+    echo "✅ Proxyman rules imported ($rule_count rules)"
+    if [[ -n "$rule_id" ]]; then
+        echo "   Rule: $rule_id"
+    else
+        echo "   Profile: $profile"
+    fi
+    echo "   Config: $config_file"
+}
+
+_stop_proxyman() {
+    local config=$(_load_config)
+    local cli=$(echo "$config" | jq -r '.proxyman_cli')
+
+    if [[ ! -x "$cli" ]]; then
+        echo "⚠️  proxyman-cli not found, skipping"
+    else
+        # Import empty config to clear rules
+        echo "[]" > "$CONFIG_DIR/tmp/active-proxyman.config"
+        "$cli" import "$CONFIG_DIR/tmp/active-proxyman.config" 2>/dev/null
+    fi
+
+    echo "{ \"backend\": \"proxyman\", \"stopped_at\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\" }" >"$SCRIPT_DIR/last_run.json"
+    echo "🛑 Proxyman rules cleared"
+}
+
 print_help() {
     echo ""
     echo "📖 Usage: $SCRIPT_NAME <command> [options]"
@@ -53,9 +227,10 @@ print_help() {
     echo "  list                      List all rules for a profile"
     echo "  toggle <rule_id>          Toggle a rule on/off"
     echo "  describe <rule_id> --profile <profile>  Show full rule JSON"
-    echo "  start                     Start mitmproxy with the selected profile"
-    echo "  stop                      Stop mitmproxy"
+    echo "  start --profile <p> [--rule <id>]  Start proxy with profile (or single rule)"
+    echo "  stop                      Stop proxy"
     echo "  status                    Show current proxy status"
+    echo "  config [key] [value]      Show/set configuration (backend, proxyman_cli)"
     echo "  install                   Symlink this CLI to ~/.local/bin"
     echo "  update                    Pull latest version and sync"
     echo "  create-profile <name>     Create a new profile in rules.json"
@@ -65,18 +240,11 @@ print_help() {
     echo "  export --profile <profile>  Output all enabled rules as JSON"
     echo "  import-proxyman <file> --profile <profile>  Import Proxyman rules"
     echo "  export-proxyman --profile <profile> --output <file>  Export to Proxyman format"
-    echo "  help                      Show this help message"
-    echo "  version                   Show version info"
-    echo "  which                     Show the resolved CLI path"
     echo "  logs [--filter <text>] [--no-follow] [--json]  View structured logs"
-    echo "  ls, show                  Aliases for list"
-    echo "  on                        Alias for start"
-    echo "  off                       Alias for stop"
-    echo "  version                   Show version info"
-    echo "  ls                        Alias for list"
-    echo "  on                        Alias for start"
-    echo "  off                       Alias for stop"
-    echo "  show                      Alias for list"
+    echo "  which                     Show the resolved CLI path"
+    echo "  help, version             Show help or version info"
+    echo ""
+    echo "Aliases: ls/show=list, on=start, off=stop"
     echo ""
     echo "Options:"
     echo "  --profile <name>          Use a specific profile"
@@ -229,15 +397,23 @@ toggle_rule() {
 }
 
 start_proxy() {
+    local backend=$(_get_backend)
+
+    if [[ "$backend" == "proxyman" ]]; then
+        _start_proxyman "$@"
+        return
+    fi
+
+    # mitmproxy backend (default)
     local profile
     profile=$(get_profile "$@")
     local preserve_https=false
-    
+
     # Check for --preserve-https flag
     for arg in "$@"; do
         [[ "$arg" == "--preserve-https" ]] && preserve_https=true
     done
-    
+
     local script="$SCRIPT_DIR/generated_proxy_map.py"
 
     echo "import re" >"$script"
@@ -380,14 +556,53 @@ EOF
 }
 
 status() {
-    if pgrep -f mitmdump >/dev/null; then
-        echo "✅ mitmdump is running"
+    local backend=$(_get_backend)
+    echo "Backend: $backend"
+    echo ""
+
+    if [[ -f "$SCRIPT_DIR/last_run.json" ]]; then
+        local last_profile=$(jq -r '.profile // "unknown"' "$SCRIPT_DIR/last_run.json")
+        local last_started=$(jq -r '.started_at // "unknown"' "$SCRIPT_DIR/last_run.json")
+        local last_backend=$(jq -r '.backend // "mitmproxy"' "$SCRIPT_DIR/last_run.json")
+
+        if [[ "$last_backend" == "proxyman" ]]; then
+            local active_rules=$(jq -r '.active_rules // "none"' "$SCRIPT_DIR/last_run.json")
+            echo "Last run: $last_backend"
+            echo "  Profile: $last_profile"
+            echo "  Rules: $active_rules"
+            echo "  Started: $last_started"
+        else
+            echo "Last run: mitmproxy"
+            echo "  Profile: $last_profile"
+            echo "  Started: $last_started"
+        fi
+        echo ""
+    fi
+
+    if [[ "$backend" == "proxyman" ]]; then
+        if pgrep -f "Proxyman" >/dev/null; then
+            echo "✅ Proxyman app is running"
+        else
+            echo "⚠️  Proxyman app is not running"
+        fi
     else
-        echo "❌ mitmdump is not running"
+        if pgrep -f mitmdump >/dev/null; then
+            echo "✅ mitmdump is running"
+        else
+            echo "❌ mitmdump is not running"
+        fi
     fi
 }
 
 stop_proxy() {
+    local backend=$(_get_backend)
+
+    if [[ "$backend" == "proxyman" ]]; then
+        _stop_proxyman
+        return
+    fi
+
+    # mitmproxy backend (default)
     pkill -f mitmdump && echo "🛑 mitmdump stopped" || echo "⚠️  mitmdump was not running"
 }
 
@@ -483,6 +698,37 @@ which_command() {
     echo "📍 Resolved path: $SCRIPT_DIR/$SCRIPT_NAME"
 }
 
+config_cmd() {
+    local key="$1"
+    local value="$2"
+
+    if [[ -z "$key" ]]; then
+        # Show current config
+        echo "⚙️  Giant Proxy Configuration"
+        echo "   Config file: $CONFIG_FILE"
+        echo ""
+        local config=$(_load_config)
+        local backend=$(echo "$config" | jq -r '.backend // "mitmproxy"')
+        local proxyman_cli=$(echo "$config" | jq -r '.proxyman_cli // "/Applications/Proxyman.app/Contents/MacOS/proxyman-cli"')
+        echo "   backend:      $backend"
+        echo "   proxyman_cli: $proxyman_cli"
+        return
+    fi
+
+    if [[ -z "$value" ]]; then
+        # Show specific key
+        local config=$(_load_config)
+        echo "$config" | jq -r ".${key} // empty"
+        return
+    fi
+
+    # Set value
+    local config=$(_load_config)
+    local new_config=$(echo "$config" | jq --arg key "$key" --arg value "$value" '.[$key] = $value')
+    _save_config "$new_config"
+    echo "✅ Set $key = $value"
+}
+
 doctor() {
     local json_output=false
     local verbose_output=false
@@ -494,11 +740,15 @@ doctor() {
         esac
     done
 
+    local backend=$(_get_backend)
     local mitmproxy_ok=false
     local cert_ok=false
+    local proxyman_ok=false
+    local proxyman_cli_ok=false
+
+    # Check mitmproxy
     local mitm_path
     mitm_path=$(command -v mitmdump || true)
-
     if [[ -x "$mitm_path" ]]; then
         mitmproxy_ok=true
     fi
@@ -508,23 +758,49 @@ doctor() {
         cert_ok=true
     fi
 
+    # Check Proxyman
+    local proxyman_cli=$(_load_config | jq -r '.proxyman_cli')
+    if [[ -x "$proxyman_cli" ]]; then
+        proxyman_cli_ok=true
+    fi
+    if [[ -d "/Applications/Proxyman.app" ]]; then
+        proxyman_ok=true
+    fi
+
     if [[ "$json_output" == true ]]; then
         echo "{"
+        echo "  \"backend\": \"$backend\","
         echo "  \"mitmproxy_installed\": $mitmproxy_ok,"
-        echo "  \"cert_installed\": $cert_ok"
+        echo "  \"cert_installed\": $cert_ok,"
+        echo "  \"proxyman_app_installed\": $proxyman_ok,"
+        echo "  \"proxyman_cli_available\": $proxyman_cli_ok"
         echo "}"
     elif [[ "$verbose_output" == true ]]; then
         echo "🩺 Giant Proxy Diagnostic Report"
         echo "────────────────────────────────────"
-        echo "📦 mitmdump path: ${mitm_path:-Not Found}"
-        echo "📄 cert path: $cert_path"
+        echo "🔧 Current backend: $backend"
         echo ""
-        $mitmproxy_ok && echo "✅ mitmdump is installed" || echo "❌ mitmdump is NOT installed"
-        $cert_ok && echo "✅ mitmproxy certificate is installed" || echo "❌ mitmproxy certificate is NOT installed"
+        echo "mitmproxy:"
+        echo "  📦 mitmdump path: ${mitm_path:-Not Found}"
+        echo "  📄 cert path: $cert_path"
+        $mitmproxy_ok && echo "  ✅ mitmdump is installed" || echo "  ❌ mitmdump is NOT installed"
+        $cert_ok && echo "  ✅ certificate is installed" || echo "  ❌ certificate is NOT installed"
+        echo ""
+        echo "Proxyman:"
+        echo "  📦 CLI path: $proxyman_cli"
+        $proxyman_ok && echo "  ✅ Proxyman.app is installed" || echo "  ❌ Proxyman.app is NOT installed"
+        $proxyman_cli_ok && echo "  ✅ proxyman-cli is available" || echo "  ❌ proxyman-cli is NOT available"
         echo ""
     else
-        $mitmproxy_ok && echo "✅ mitmdump installed" || echo "❌ mitmdump NOT found"
-        $cert_ok && echo "✅ mitmproxy cert installed" || echo "❌ mitmproxy cert NOT found"
+        echo "Backend: $backend"
+        echo ""
+        echo "mitmproxy:"
+        $mitmproxy_ok && echo "  ✅ mitmdump installed" || echo "  ❌ mitmdump NOT found"
+        $cert_ok && echo "  ✅ mitmproxy cert installed" || echo "  ❌ mitmproxy cert NOT found"
+        echo ""
+        echo "Proxyman:"
+        $proxyman_ok && echo "  ✅ Proxyman.app installed" || echo "  ❌ Proxyman.app NOT found"
+        $proxyman_cli_ok && echo "  ✅ proxyman-cli available" || echo "  ❌ proxyman-cli NOT found"
     fi
 }
 
@@ -705,8 +981,12 @@ import_proxyman() {
             local dest_scheme=$(echo "$rule" | jq -r '.toURLComponent.scheme // "http"')
             local dest_host=$(echo "$rule" | jq -r '.toURLComponent.host // "localhost"')
             local dest_port=$(echo "$rule" | jq -r '.toURLComponent.port // "8080"')
+            local dest_path=$(echo "$rule" | jq -r '.toURLComponent.path // ""')
+            local dest_query=$(echo "$rule" | jq -r '.toURLComponent.query // ""')
             local enabled=$(echo "$rule" | jq -r '.isEnabled // true')
-            
+            local preserveOriginalURL=$(echo "$rule" | jq -r '.preserveOriginalURL // true')
+            local preserveHostHeader=$(echo "$rule" | jq -r '.preserveHostHeader // true')
+
             if [[ -n "$name" && -n "$regex_pattern" ]]; then
                 # Determine target profile BEFORE unescaping (for detection)
                 local target_profile="$profile"
@@ -728,14 +1008,20 @@ import_proxyman() {
                 # Add the rule
                 jq --arg id "$rule_id" --arg regex "$regex_pattern" --arg host "$dest_host" \
                    --argjson port "$dest_port" --arg profile "$target_profile" --argjson enabled "$enabled" \
-                   --arg scheme "$dest_scheme" '
+                   --arg scheme "$dest_scheme" --arg path "$dest_path" --arg query "$dest_query" \
+                   --argjson preserveOriginalURL "$preserveOriginalURL" \
+                   --argjson preserveHostHeader "$preserveHostHeader" '
                 .[$profile] += [{
                     id: $id,
                     enabled: $enabled,
                     regex: $regex,
                     host: $host,
                     port: $port,
-                    scheme: $scheme
+                    scheme: $scheme,
+                    path: $path,
+                    query: $query,
+                    preserveOriginalURL: $preserveOriginalURL,
+                    preserveHostHeader: $preserveHostHeader
                 }]' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
                 
                 ((imported_count++))
@@ -941,6 +1227,7 @@ describe) describe_rule "$@" ;;
 export) export_rules "$@" ;;
 import-proxyman) import_proxyman "$@" ;;
 export-proxyman) export_proxyman "$@" ;;
+config) config_cmd "$@" ;;
 which) which_command ;;
 version | --version | -v) echo "$SCRIPT_NAME version $VERSION" ;;
 help | --help | -h) print_help ;;
