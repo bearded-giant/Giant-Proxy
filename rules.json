@@ -13,6 +13,22 @@
       "regex": "^(https):\\/\\/.*\\.admin\\.rechargeapps\\.com\\/merchant\\/v1.*",
       "host": "localhost",
       "port": 3001
+    },
+    {
+      "id": "prod_remix_legacy_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.admin\\.rechargeapps\\.com/merchant/v1.*",
+      "host": "localhost",
+      "port": 3001,
+      "scheme": "http"
+    },
+    {
+      "id": "prod_remix_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.admin\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "localhost",
+      "port": 3000,
+      "scheme": "http"
     }
   ],
   "preprod": [
@@ -29,6 +45,30 @@
       "regex": "^(https):\\/\\/.*\\.preprod\\.rechargeapps\\.com\\/merchant\\/v1.*",
       "host": "localhost",
       "port": 3001
+    },
+    {
+      "id": "preprod_remix_legacy_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.preprod\\.rechargeapps\\.com/merchant/v1.*",
+      "host": "localhost",
+      "port": 3001,
+      "scheme": "http"
+    },
+    {
+      "id": "preprod_remix_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.preprod\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "localhost",
+      "port": 3000,
+      "scheme": "http"
+    },
+    {
+      "id": "local_ma2_stack",
+      "enabled": true,
+      "regex": "^(https)://.*\\.preprod\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "localhost",
+      "port": 3000,
+      "scheme": "http"
     }
   ],
   "prestage": [
@@ -38,10 +78,25 @@
       "regex": "^(https):\\/\\/.*\\.prestage\\.rechargeapps\\.com\\/merchant(?!\\/v1).*",
       "host": "localhost",
       "port": 3000
+    },
+    {
+      "id": "prestage_remix_legacy_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.prestage\\.rechargeapps\\.com/merchant/v1.*",
+      "host": "localhost",
+      "port": 3001,
+      "scheme": "http"
+    },
+    {
+      "id": "prestage_remix_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.prestage\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "localhost",
+      "port": 3000,
+      "scheme": "http"
     }
   ],
-  "proxyman-imported": [],
-  "proxyman-test": [
+  "stage": [
     {
       "id": "stage_to_featurebranch",
       "enabled": true,
@@ -49,6 +104,22 @@
       "host": "feature-311-wl-and-tests.stage.rechargeapps.net",
       "port": 443,
       "scheme": "https"
+    },
+    {
+      "id": "stage_remix_legacy_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.admin\\.stage\\.rechargeapps\\.com/merchant/v1.*",
+      "host": "localhost",
+      "port": 3001,
+      "scheme": "http"
+    },
+    {
+      "id": "stage_remix_merchant_portal",
+      "enabled": true,
+      "regex": "^(https)://.*\\.admin\\.stage\\.rechargeapps\\.com/merchant(?!/v1).*",
+      "host": "localhost",
+      "port": 3000,
+      "scheme": "http"
     }
   ]
 }

@@ -245,7 +245,12 @@ start_proxy() {
     echo "import ssl" >>"$script"
     echo "import os" >>"$script"
     echo "" >>"$script"
-    echo "preserve_https = $preserve_https" >>"$script"
+    # Convert bash boolean to Python boolean
+    local py_preserve_https="False"
+    if [[ "$preserve_https" == "true" ]]; then
+        py_preserve_https="True"
+    fi
+    echo "preserve_https = $py_preserve_https" >>"$script"
     echo "rules = [" >>"$script"
 
     jq -c ".\"$profile\"[] | select(.enabled == true)" "$RULES_FILE" | while read -r rule; do
@@ -347,7 +352,7 @@ def request(flow: http.HTTPFlow) -> None:
                 target_port = port
             
             log_request(request_id, flow, "redirect", host, target_port, target_scheme)
-            
+
             flow.request.host = host
             flow.request.port = target_port
             flow.request.scheme = target_scheme
@@ -604,6 +609,7 @@ import_proxyman() {
     local file="$1"
     shift
     local profile=""
+    local auto_detect=false
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -615,12 +621,17 @@ import_proxyman() {
             profile="$2"
             shift 2
             ;;
+        --auto-detect)
+            auto_detect=true
+            shift
+            ;;
         *) shift ;;
         esac
     done
     
-    if [[ -z "$file" || -z "$profile" ]]; then
-        echo "Usage: $SCRIPT_NAME import-proxyman <file> --profile <profile>"
+    if [[ -z "$file" ]]; then
+        echo "Usage: $SCRIPT_NAME import-proxyman <file> [--profile <profile>] [--auto-detect]"
+        echo "  --auto-detect: Automatically route rules to profiles based on URL patterns"
         exit 1
     fi
     
@@ -629,10 +640,55 @@ import_proxyman() {
         exit 1
     fi
     
-    # Create profile if it doesn't exist
-    if ! jq -e ".\"$profile\"" "$RULES_FILE" >/dev/null 2>&1; then
-        jq --arg profile "$profile" '. + {($profile): []}' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
-        echo "📁 Created new profile: $profile"
+    # Helper function to detect environment from URL
+    detect_environment() {
+        local url="$1"
+        # Handle both escaped and unescaped patterns
+        # Check for environment subdomains in various patterns
+        if [[ "$url" =~ (\\\.|\.)(stage)(\\\.|\.)|admin\\\.stage\\\.rechargeapps ]]; then
+            echo "stage"
+        elif [[ "$url" =~ (\\\.|\.)(preprod)(\\\.|\.)|\\\.preprod\\\.rechargeapps ]]; then
+            echo "preprod"
+        elif [[ "$url" =~ (\\\.|\.)(prestage)(\\\.|\.)|\\\.prestage\\\.rechargeapps ]]; then
+            echo "prestage"
+        elif [[ "$url" =~ \\\.admin\\\.rechargeapps\\\.com|^.*admin\.rechargeapps\.com ]] && [[ ! "$url" =~ (stage|preprod|prestage) ]]; then
+            echo "prod"
+        else
+            echo "unknown"
+        fi
+    }
+    
+    # If auto-detect and no profile specified, we'll route each rule individually
+    if [[ "$auto_detect" == "true" && -z "$profile" ]]; then
+        echo "🔍 Auto-detecting environments from URL patterns..."
+        local detected_envs=()
+        
+        # First pass: detect all environments
+        if jq -e '.[0]' "$file" >/dev/null 2>&1; then
+            while read -r url; do
+                local env=$(detect_environment "$url")
+                if [[ "$env" != "unknown" ]] && [[ ! " ${detected_envs[@]} " =~ " ${env} " ]]; then
+                    detected_envs+=("$env")
+                fi
+            done < <(jq -r '.[].mapFromURL // ""' "$file" 2>/dev/null)
+        fi
+        
+        # Create profiles if needed
+        for env in "${detected_envs[@]}"; do
+            if ! jq -e ".\"$env\"" "$RULES_FILE" >/dev/null 2>&1; then
+                jq --arg profile "$env" '. + {($profile): []}' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+                echo "📁 Created new profile: $env"
+            fi
+        done
+    elif [[ -n "$profile" ]]; then
+        # Create profile if it doesn't exist
+        if ! jq -e ".\"$profile\"" "$RULES_FILE" >/dev/null 2>&1; then
+            jq --arg profile "$profile" '. + {($profile): []}' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
+            echo "📁 Created new profile: $profile"
+        fi
+    else
+        echo "❌ Either specify --profile or use --auto-detect"
+        exit 1
     fi
     
     # Parse Proxyman format (assuming JSON with rules array)
@@ -652,7 +708,18 @@ import_proxyman() {
             local enabled=$(echo "$rule" | jq -r '.isEnabled // true')
             
             if [[ -n "$name" && -n "$regex_pattern" ]]; then
-                # Proxyman uses escaped slashes, we need to unescape them
+                # Determine target profile BEFORE unescaping (for detection)
+                local target_profile="$profile"
+                if [[ "$auto_detect" == "true" && -z "$profile" ]]; then
+                    # Use the original escaped pattern for detection
+                    target_profile=$(detect_environment "$regex_pattern")
+                    if [[ "$target_profile" == "unknown" ]]; then
+                        echo "  ⚠️  Skipping rule '$name' - couldn't detect environment from URL"
+                        continue
+                    fi
+                fi
+                
+                # Now unescape slashes for storage
                 regex_pattern=$(echo "$regex_pattern" | sed 's/\\\//\//g')
                 
                 # Generate a safe rule ID from the name
@@ -660,7 +727,7 @@ import_proxyman() {
                 
                 # Add the rule
                 jq --arg id "$rule_id" --arg regex "$regex_pattern" --arg host "$dest_host" \
-                   --argjson port "$dest_port" --arg profile "$profile" --argjson enabled "$enabled" \
+                   --argjson port "$dest_port" --arg profile "$target_profile" --argjson enabled "$enabled" \
                    --arg scheme "$dest_scheme" '
                 .[$profile] += [{
                     id: $id,
@@ -672,7 +739,7 @@ import_proxyman() {
                 }]' "$RULES_FILE" >tmp.$$.json && mv tmp.$$.json "$RULES_FILE"
                 
                 ((imported_count++))
-                echo "  ✓ Imported: $name → $dest_scheme://$dest_host:$dest_port"
+                echo "  ✓ Imported to $target_profile: $name → $dest_scheme://$dest_host:$dest_port"
             fi
         done
     # Check for other format with .rules array
@@ -863,6 +930,7 @@ toggle) toggle_rule "$@" ;;
 start | on) start_proxy "$@" ;;
 stop | off) stop_proxy ;;
 status) status ;;
+logs) logs "$@" ;;
 install) install_cli ;;
 update) update_cli ;;
 create-profile) create_profile "$@" ;;
@@ -873,6 +941,7 @@ describe) describe_rule "$@" ;;
 export) export_rules "$@" ;;
 import-proxyman) import_proxyman "$@" ;;
 export-proxyman) export_proxyman "$@" ;;
+which) which_command ;;
 version | --version | -v) echo "$SCRIPT_NAME version $VERSION" ;;
 help | --help | -h) print_help ;;
 *) print_help ;;
