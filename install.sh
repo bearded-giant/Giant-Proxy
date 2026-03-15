@@ -1,25 +1,45 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+REPO="recharge/giant-proxy"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
-TARGET_NAME="giant-proxy"
-INSTALL_DIR="${HOME}/.local/bin"
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
 
-echo "🔧 Installing ${TARGET_NAME}..."
+case "$OS" in
+  darwin) OS="apple-darwin" ;;
+  linux) OS="unknown-linux-gnu" ;;
+  *) echo "unsupported OS: $OS"; exit 1 ;;
+esac
+
+case "$ARCH" in
+  x86_64|amd64) ARCH="x86_64" ;;
+  arm64|aarch64) ARCH="aarch64" ;;
+  *) echo "unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+TARGET="${ARCH}-${OS}"
+
+if [ -z "${VERSION:-}" ]; then
+  VERSION=$(curl -sSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+fi
+
+echo "installing giant-proxy $VERSION for $TARGET"
+
+URL="https://github.com/$REPO/releases/download/$VERSION/giant-proxy-$VERSION-$TARGET.tar.gz"
 
 mkdir -p "$INSTALL_DIR"
+curl -sSL "$URL" | tar xz -C "$INSTALL_DIR"
+chmod +x "$INSTALL_DIR/giantd" "$INSTALL_DIR/giant-proxy"
 
-# Use symlink instead of copying
-ln -sf "${REPO_DIR}/${TARGET_NAME}" "${INSTALL_DIR}/${TARGET_NAME}"
-chmod +x "${REPO_DIR}/${TARGET_NAME}"
+echo "installed to $INSTALL_DIR"
 
-echo "✅ Symlinked ${TARGET_NAME} to ${INSTALL_DIR}"
-
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-    echo "⚠️  ${INSTALL_DIR} is not in your PATH"
-    echo "   You may want to add this to your shell profile:"
-    echo "   export PATH=\"${INSTALL_DIR}:\$PATH\""
-else
-    echo "   You can now run '${TARGET_NAME}' from anywhere."
+if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
+  echo ""
+  echo "add to your shell profile:"
+  echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
+
+echo ""
+echo "run: giant-proxy init"

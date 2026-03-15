@@ -3,11 +3,22 @@ mod client;
 use clap::{Parser, Subcommand};
 use client::DaemonClient;
 
+const LAUNCHD_PLIST: &str = include_str!("../../../service/com.giantproxy.daemon.plist");
+const SYSTEMD_UNIT: &str = include_str!("../../../service/giantd.service");
+
 #[derive(Parser)]
 #[command(name = "giant-proxy", about = "HTTPS proxy with Map Remote rules")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    Start,
+    Stop,
+    Install,
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -51,6 +62,11 @@ enum Commands {
         #[arg(long, default_value = "toml")]
         format: String,
     },
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+    Uninstall,
     Version,
 }
 
@@ -237,6 +253,196 @@ async fn main() {
                 std::process::exit(1);
             }
         },
+        Commands::Daemon { action } => match action {
+            DaemonAction::Start => {
+                if client.is_daemon_running() {
+                    println!("daemon already running");
+                    return;
+                }
+                let giantd = which_giantd();
+                match std::process::Command::new(&giantd)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => println!("daemon started (pid {})", child.id()),
+                    Err(e) => eprintln!("failed to start daemon: {}", e),
+                }
+            }
+            DaemonAction::Stop => {
+                if !client.is_daemon_running() {
+                    println!("daemon not running");
+                    return;
+                }
+                let _ = client.post("/stop", None).await;
+                let config_dir = dirs::home_dir().unwrap().join(".giant-proxy");
+                if let Ok(Some(pid)) = giantd::pid::read_pid(&config_dir) {
+                    let _ = std::process::Command::new("kill")
+                        .arg(pid.to_string())
+                        .status();
+                }
+                println!("daemon stopped");
+            }
+            DaemonAction::Install => {
+                let os = std::env::consts::OS;
+                match os {
+                    "macos" => {
+                        let dest = dirs::home_dir()
+                            .unwrap()
+                            .join("Library/LaunchAgents/com.giantproxy.daemon.plist");
+                        std::fs::write(&dest, LAUNCHD_PLIST).expect("failed to write plist");
+                        let status = std::process::Command::new("launchctl")
+                            .args(["load", &dest.to_string_lossy()])
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => println!("daemon service installed and loaded"),
+                            _ => eprintln!("launchctl load failed"),
+                        }
+                    }
+                    "linux" => {
+                        let dest = dirs::home_dir()
+                            .unwrap()
+                            .join(".config/systemd/user/giantd.service");
+                        std::fs::create_dir_all(dest.parent().unwrap())
+                            .expect("failed to create systemd dir");
+                        std::fs::write(&dest, SYSTEMD_UNIT).expect("failed to write service");
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "daemon-reload"])
+                            .status();
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "enable", "giantd"])
+                            .status();
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "start", "giantd"])
+                            .status();
+                        println!("daemon service installed and started");
+                    }
+                    _ => eprintln!("unsupported OS: {}", os),
+                }
+            }
+            DaemonAction::Uninstall => {
+                let os = std::env::consts::OS;
+                match os {
+                    "macos" => {
+                        let plist = dirs::home_dir()
+                            .unwrap()
+                            .join("Library/LaunchAgents/com.giantproxy.daemon.plist");
+                        if plist.exists() {
+                            let _ = std::process::Command::new("launchctl")
+                                .args(["unload", &plist.to_string_lossy()])
+                                .status();
+                            let _ = std::fs::remove_file(&plist);
+                        }
+                        println!("daemon service uninstalled");
+                    }
+                    "linux" => {
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "stop", "giantd"])
+                            .status();
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "disable", "giantd"])
+                            .status();
+                        let unit = dirs::home_dir()
+                            .unwrap()
+                            .join(".config/systemd/user/giantd.service");
+                        if unit.exists() {
+                            let _ = std::fs::remove_file(&unit);
+                        }
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "daemon-reload"])
+                            .status();
+                        println!("daemon service uninstalled");
+                    }
+                    _ => eprintln!("unsupported OS: {}", os),
+                }
+            }
+        },
+        Commands::Uninstall => {
+            println!("this will remove:");
+            println!("  - daemon service (launchd/systemd)");
+            println!("  - CA certificate from trust store");
+            println!("  - ~/.giant-proxy/ directory");
+            println!();
+            print!("continue? [y/N] ");
+            use std::io::Write;
+            std::io::stdout().flush().unwrap();
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).unwrap();
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("cancelled");
+                return;
+            }
+
+            if client.is_daemon_running() {
+                let _ = client.post("/stop", None).await;
+                let config_dir = dirs::home_dir().unwrap().join(".giant-proxy");
+                if let Ok(Some(pid)) = giantd::pid::read_pid(&config_dir) {
+                    let _ = std::process::Command::new("kill")
+                        .arg(pid.to_string())
+                        .status();
+                }
+            }
+
+            let os = std::env::consts::OS;
+            match os {
+                "macos" => {
+                    let plist = dirs::home_dir()
+                        .unwrap()
+                        .join("Library/LaunchAgents/com.giantproxy.daemon.plist");
+                    if plist.exists() {
+                        let _ = std::process::Command::new("launchctl")
+                            .args(["unload", &plist.to_string_lossy()])
+                            .status();
+                        let _ = std::fs::remove_file(&plist);
+                    }
+                    let ca_path = dirs::home_dir()
+                        .unwrap()
+                        .join(".giant-proxy/ca/giant-proxy-ca.pem");
+                    if ca_path.exists() {
+                        let _ = std::process::Command::new("sudo")
+                            .args([
+                                "security",
+                                "remove-trusted-cert",
+                                "-d",
+                                &ca_path.to_string_lossy(),
+                            ])
+                            .status();
+                    }
+                }
+                "linux" => {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "stop", "giantd"])
+                        .status();
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "disable", "giantd"])
+                        .status();
+                    let unit = dirs::home_dir()
+                        .unwrap()
+                        .join(".config/systemd/user/giantd.service");
+                    if unit.exists() {
+                        let _ = std::fs::remove_file(&unit);
+                    }
+                    let _ = std::process::Command::new("sudo")
+                        .args([
+                            "rm",
+                            "-f",
+                            "/usr/local/share/ca-certificates/giant-proxy-ca.crt",
+                        ])
+                        .status();
+                    let _ = std::process::Command::new("sudo")
+                        .args(["update-ca-certificates"])
+                        .status();
+                }
+                _ => {}
+            }
+
+            let config_dir = dirs::home_dir().unwrap().join(".giant-proxy");
+            if config_dir.exists() {
+                std::fs::remove_dir_all(&config_dir).expect("failed to remove ~/.giant-proxy");
+            }
+
+            println!("giant-proxy uninstalled");
+        }
         Commands::Version => {
             println!("giant-proxy {}", env!("CARGO_PKG_VERSION"));
         }
@@ -250,4 +456,15 @@ async fn ensure_daemon(client: &DaemonClient) {
 
     eprintln!("daemon not running. start it with: giantd --foreground");
     std::process::exit(1);
+}
+
+fn which_giantd() -> String {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("giantd")))
+        .filter(|p| p.exists());
+    match exe_dir {
+        Some(p) => p.to_string_lossy().to_string(),
+        None => "giantd".to_string(),
+    }
 }

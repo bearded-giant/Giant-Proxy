@@ -200,3 +200,26 @@ pub fn read_state() -> Result<Option<DaemonState>> {
         serde_json::from_str(&content).map_err(|e| GiantError::ConfigError(e.to_string()))?;
     Ok(Some(state))
 }
+
+pub fn migrate_config() -> Result<()> {
+    let path = config_dir().join("config.toml");
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&path)?;
+    let config: AppConfig = toml::from_str(&content)?;
+
+    if config.version < 1 {
+        let backup = config_dir().join("config.toml.bak");
+        std::fs::copy(&path, &backup)?;
+        let migrated = AppConfig {
+            version: 1,
+            ..config
+        };
+        let new_content = toml::to_string_pretty(&migrated)
+            .map_err(|e| GiantError::ConfigError(e.to_string()))?;
+        std::fs::write(&path, new_content)?;
+    }
+
+    Ok(())
+}

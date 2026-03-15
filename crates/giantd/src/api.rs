@@ -46,6 +46,7 @@ async fn health_check() -> impl IntoResponse {
     Json(json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
+        "protocol_version": 1,
         "pid": std::process::id()
     }))
 }

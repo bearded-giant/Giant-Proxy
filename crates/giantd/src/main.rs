@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = config::load_config()?;
+    config::migrate_config()?;
     let listen_port = port_override.unwrap_or(config.listen_port);
     let pac_port = config.pac_port;
     let config_dir = config::config_dir();
