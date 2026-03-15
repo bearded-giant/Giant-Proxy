@@ -16,3 +16,7 @@ scratch/
 **/*.rs.bk
 *.swp
 *.swo
+
+# node/tauri
+node_modules/
+
