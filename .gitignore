@@ -10,3 +10,9 @@ logs/
 *.log
 
 scratch/
+
+# rust
+/target
+**/*.rs.bk
+*.swp
+*.swo

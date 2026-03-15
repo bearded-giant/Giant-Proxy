@@ -1,0 +1,61 @@
+[meta]
+name = "preprod"
+description = "Preprod environment redirects"
+format_version = 1
+
+[[rules]]
+id = "remix_merchant_portal"
+enabled = true
+preserve_host = true
+
+[rules.match]
+host = "*.preprod.rechargeapps.com"
+path = "/merchant/*"
+not_path = "/merchant/v1/*"
+
+[rules.target]
+host = "localhost"
+port = 3000
+scheme = "http"
+
+[[rules]]
+id = "remix_legacy_portal"
+enabled = true
+preserve_host = true
+
+[rules.match]
+host = "*.preprod.rechargeapps.com"
+path = "/merchant/v1/*"
+
+[rules.target]
+host = "localhost"
+port = 3001
+scheme = "http"
+
+[[rules]]
+id = "admin_tools"
+enabled = false
+preserve_host = true
+
+[rules.match]
+host = "*.preprod.rechargeapps.com"
+path = "/tools/*"
+not_path = "/tools/v1/*"
+
+[rules.target]
+host = "localhost"
+port = 5173
+scheme = "http"
+
+[[rules]]
+id = "custom_api_redirect"
+enabled = false
+preserve_host = false
+
+[rules.match]
+regex = "^https://api-(v[0-9]+)\\.preprod\\.rechargeapps\\.com/.*"
+
+[rules.target]
+host = "localhost"
+port = 8000
+scheme = "http"
