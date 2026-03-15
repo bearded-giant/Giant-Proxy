@@ -1476,6 +1476,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dirs",
+ "giantd",
  "http-body-util",
  "hyper",
  "hyper-util",

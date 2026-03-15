@@ -18,3 +18,4 @@ hyperlocal = "0.9"
 http-body-util = "0.1"
 tower = "0.5"
 dirs = "6"
+giantd = { path = "../giantd" }

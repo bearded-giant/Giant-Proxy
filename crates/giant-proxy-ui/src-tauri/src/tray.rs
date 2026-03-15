@@ -71,7 +71,10 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 "dashboard" => {
-                    // phase 3: open full dashboard window
+                    if let Some(window) = app.get_webview_window("dashboard") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
                 "quit" => {
                     app.exit(0);

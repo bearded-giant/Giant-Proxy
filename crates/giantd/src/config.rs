@@ -58,7 +58,7 @@ pub struct ProfileMeta {
     pub format_version: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProfileRaw {
     pub meta: ProfileMeta,
     pub rules: Vec<RuleRaw>,
@@ -166,6 +166,16 @@ pub fn list_profiles() -> Result<Vec<String>> {
     }
     profiles.sort();
     Ok(profiles)
+}
+
+pub fn write_profile(profile: &ProfileRaw) -> Result<()> {
+    let dir = config_dir().join("profiles");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.toml", profile.meta.name));
+    let content =
+        toml::to_string_pretty(profile).map_err(|e| GiantError::ConfigError(e.to_string()))?;
+    std::fs::write(&path, content)?;
+    Ok(())
 }
 
 pub fn write_state(state: &DaemonState) -> Result<()> {

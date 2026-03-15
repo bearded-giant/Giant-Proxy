@@ -4,7 +4,7 @@ mod daemon;
 mod tray;
 
 use daemon::DaemonClient;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
 async fn get_status() -> Result<serde_json::Value, String> {
@@ -54,6 +54,64 @@ async fn get_env() -> Result<serde_json::Value, String> {
     client.get("/env").await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_rule(rule_id: String) -> Result<serde_json::Value, String> {
+    let client = DaemonClient::new();
+    client
+        .get(&format!("/rules/{}", rule_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn add_rule(rule: serde_json::Value) -> Result<serde_json::Value, String> {
+    let client = DaemonClient::new();
+    client
+        .post("/rules", Some(rule))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn update_rule(
+    rule_id: String,
+    rule: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let client = DaemonClient::new();
+    client
+        .put(&format!("/rules/{}", rule_id), rule)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_rule(rule_id: String) -> Result<serde_json::Value, String> {
+    let client = DaemonClient::new();
+    client
+        .delete(&format!("/rules/{}", rule_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn reorder_rules(order: Vec<String>) -> Result<serde_json::Value, String> {
+    let client = DaemonClient::new();
+    let body = serde_json::json!({"order": order});
+    client
+        .post("/rules/reorder", Some(body))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("dashboard") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -75,6 +133,12 @@ fn main() {
             start_proxy,
             stop_proxy,
             get_env,
+            get_rule,
+            add_rule,
+            update_rule,
+            delete_rule,
+            reorder_rules,
+            open_dashboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

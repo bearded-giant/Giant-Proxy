@@ -2,7 +2,7 @@ use glob_match::glob_match;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuleRaw {
     pub id: String,
     pub enabled: bool,
@@ -129,5 +129,16 @@ impl Rule {
             .path_and_query(path_and_query)
             .build()
             .expect("valid rewritten URI")
+    }
+
+    pub fn to_raw(&self) -> RuleRaw {
+        RuleRaw {
+            id: self.id.clone(),
+            enabled: self.enabled,
+            match_rule: self.match_rule.clone(),
+            target: self.target.clone(),
+            preserve_host: self.preserve_host,
+            priority: self.priority,
+        }
     }
 }

@@ -39,6 +39,18 @@ enum Commands {
         fix: bool,
     },
     Env,
+    Import {
+        file: String,
+        #[arg(long, value_name = "NAME")]
+        r#as: Option<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    Export {
+        profile: String,
+        #[arg(long, default_value = "toml")]
+        format: String,
+    },
     Version,
 }
 
@@ -160,6 +172,71 @@ async fn main() {
                 }
             }
         }
+        Commands::Import {
+            file,
+            r#as: name,
+            all,
+        } => {
+            let path = std::path::Path::new(&file);
+            if !path.exists() {
+                eprintln!("file not found: {}", file);
+                std::process::exit(1);
+            }
+
+            if all {
+                match giantd::convert::import_legacy(path) {
+                    Ok(profiles) => {
+                        for (pname, profile) in &profiles {
+                            match giantd::convert::save_profile(profile) {
+                                Ok(()) => println!("imported profile: {}", pname),
+                                Err(e) => eprintln!("failed to import {}: {}", pname, e),
+                            }
+                        }
+                        println!("imported {} profiles", profiles.len());
+                    }
+                    Err(e) => {
+                        eprintln!("import failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else if let Some(profile_name) = name {
+                match giantd::convert::import_legacy_profile(path, &profile_name) {
+                    Ok(profile) => match giantd::convert::save_profile(&profile) {
+                        Ok(()) => println!("imported profile: {}", profile_name),
+                        Err(e) => eprintln!("failed to save: {}", e),
+                    },
+                    Err(e) => {
+                        eprintln!("import failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!(
+                    "specify --all to import all profiles, or --as <name> for a single profile"
+                );
+                std::process::exit(1);
+            }
+        }
+        Commands::Export { profile, format } => match giantd::config::load_profile(&profile) {
+            Ok(loaded) => {
+                let raw = giantd::config::ProfileRaw {
+                    meta: loaded.meta,
+                    rules: loaded.rules.iter().map(|r| r.to_raw()).collect(),
+                };
+                match format.as_str() {
+                    "toml" => match giantd::convert::export_toml(&raw) {
+                        Ok(content) => print!("{}", content),
+                        Err(e) => eprintln!("export failed: {}", e),
+                    },
+                    "mitmproxy" => print!("{}", giantd::convert::export_mitmproxy_addon(&raw)),
+                    _ => eprintln!("unknown format: {}. supported: toml, mitmproxy", format),
+                }
+            }
+            Err(e) => {
+                eprintln!("failed to load profile '{}': {}", profile, e);
+                std::process::exit(1);
+            }
+        },
         Commands::Version => {
             println!("giant-proxy {}", env!("CARGO_PKG_VERSION"));
         }
